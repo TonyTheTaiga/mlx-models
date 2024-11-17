@@ -3,15 +3,27 @@ import mlx.nn as nn
 
 
 class Block(nn.Module):
-    def __init__(self, in_channels, out_channels, stride: int, shortcut: nn.Module | None):
+    def __init__(
+        self, in_channels, out_channels, stride: int, shortcut: nn.Module | None
+    ):
         super().__init__()
         self.conv1 = nn.Conv2d(
-            in_channels=in_channels, out_channels=out_channels, kernel_size=3, stride=stride, padding=1, bias=False
+            in_channels=in_channels,
+            out_channels=out_channels,
+            kernel_size=3,
+            stride=stride,
+            padding=1,
+            bias=False,
         )
         self.bn1 = nn.BatchNorm(out_channels)
         self.relu = nn.ReLU()
         self.conv2 = nn.Conv2d(
-            in_channels=out_channels, out_channels=out_channels, kernel_size=3, stride=1, padding=1, bias=False
+            in_channels=out_channels,
+            out_channels=out_channels,
+            kernel_size=3,
+            stride=1,
+            padding=1,
+            bias=False,
         )
         self.bn2 = nn.BatchNorm(out_channels)
         self.shortcut = shortcut
@@ -58,7 +70,13 @@ class Shortcut(nn.Module):
 class ConvShortcut(nn.Module):
     def __init__(self, in_channels, out_channels):
         super().__init__()
-        self.conv = nn.Conv2d(in_channels=in_channels, out_channels=out_channels, kernel_size=1, stride=2, bias=False)
+        self.conv = nn.Conv2d(
+            in_channels=in_channels,
+            out_channels=out_channels,
+            kernel_size=1,
+            stride=2,
+            bias=False,
+        )
         self.bn = nn.BatchNorm(out_channels)
 
     def __call__(self, x):
@@ -67,7 +85,9 @@ class ConvShortcut(nn.Module):
 
 
 class Layer(nn.Module):
-    def __init__(self, in_channels: int, out_channels: int, downsample: int, num_blocks: int):
+    def __init__(
+        self, in_channels: int, out_channels: int, downsample: int, num_blocks: int
+    ):
         super().__init__()
 
         blocks = []
@@ -76,7 +96,9 @@ class Layer(nn.Module):
                 in_channels=in_channels,
                 out_channels=out_channels,
                 stride=2 if downsample else 1,
-                shortcut=ConvShortcut(in_channels, out_channels) if in_channels != out_channels else None,
+                shortcut=ConvShortcut(in_channels, out_channels)
+                if in_channels != out_channels
+                else None,
             )
         )
 
@@ -156,7 +178,7 @@ class ResNet(nn.Module):
         x = self.layer2(x)
         x = self.layer3(x)
         x = self.layer4(x)
-        x = mx.mean(x, (1,2))
+        x = mx.mean(x, (1, 2))
         x = self.classifier(x)
         return x
 

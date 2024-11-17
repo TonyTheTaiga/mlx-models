@@ -19,7 +19,10 @@ transforms = A.Compose(
     [
         A.RandomResizedCrop(height=384, width=384),
         A.HorizontalFlip(p=0.5),
-        A.Normalize(mean=[0.46170458, 0.45680697, 0.42853157], std=[0.28604365, 0.2825701, 0.3046809])
+        A.Normalize(
+            mean=[0.46170458, 0.45680697, 0.42853157],
+            std=[0.28604365, 0.2825701, 0.3046809],
+        ),
         # A.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.2, p=0.5),
     ]
 )
@@ -28,7 +31,10 @@ val_transforms = A.Compose(
     [
         A.SmallestMaxSize(438, interpolation=cv2.INTER_AREA, always_apply=True),
         A.CenterCrop(384, 384, always_apply=True),
-        A.Normalize(mean=[0.46170458, 0.45680697, 0.42853157], std=[0.28604365, 0.2825701, 0.3046809])
+        A.Normalize(
+            mean=[0.46170458, 0.45680697, 0.42853157],
+            std=[0.28604365, 0.2825701, 0.3046809],
+        ),
     ]
 )
 
@@ -38,7 +44,9 @@ std = [0.28604365, 0.2825701, 0.3046809]
 
 def ce_loss_fn(model, inputs, labels):
     logits = model(inputs)
-    return nn.losses.cross_entropy(logits, labels, reduction="mean", label_smoothing=0.1)
+    return nn.losses.cross_entropy(
+        logits, labels, reduction="mean", label_smoothing=0.1
+    )
 
 
 def load_image(image_path, augment):
@@ -48,7 +56,7 @@ def load_image(image_path, augment):
         image = transforms(image=image)["image"]
     else:
         image = val_transforms(image=image)["image"]
-    
+
     return mx.array(image)
 
 
@@ -56,7 +64,10 @@ def batch_iterate(batch_size, X, y, augment):
     perm = mx.array(np.random.permutation(y.size))
     for s in range(0, y.size, batch_size):
         ids = perm[s : s + batch_size]
-        yield mx.stack([load_image(path, augment) for path in X[ids]], axis=0), mx.array(y[ids])
+        yield (
+            mx.stack([load_image(path, augment) for path in X[ids]], axis=0),
+            mx.array(y[ids]),
+        )
 
 
 def val_loop(model, frame):
@@ -64,7 +75,9 @@ def val_loop(model, frame):
     total_samples = 0
     total_loss = 0.0
 
-    for inputs, labels in batch_iterate(4, frame["image"].to_numpy(), frame["target"].to_numpy(), False):
+    for inputs, labels in batch_iterate(
+        4, frame["image"].to_numpy(), frame["target"].to_numpy(), False
+    ):
         batch_size = len(inputs)
         logits = model(inputs)
 
@@ -106,6 +119,7 @@ def get_cosine_lr(base_lr, current_epoch, total_epochs, warmup_epochs):
         return base_lr * (current_epoch + 1) / warmup_epochs
 
     return base_lr * 0.5 * (1 + math.cos(math.pi * current_epoch / total_epochs))
+
 
 def main():
     model = ResNet(3, num_classes=10)
