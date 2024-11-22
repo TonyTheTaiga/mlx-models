@@ -327,7 +327,6 @@ class ResNet50(nn.Module):
 
     def __call__(self, x):
         x = self.stem(x)
-        print(x.shape)
         x = self.layer1(x)
         x = self.layer2(x)
         x = self.layer3(x)
