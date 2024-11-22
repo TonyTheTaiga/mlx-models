@@ -253,7 +253,7 @@ class ResNet50(nn.Module):
         init_layer_outsize = l1_size
 
         # stem as proposed in resnet-c
-        self.init_layer = nn.Sequential(
+        self.stem = nn.Sequential(
             *[
                 nn.Conv2d(
                     in_channels=in_channels,
@@ -326,7 +326,7 @@ class ResNet50(nn.Module):
         self.classifier = nn.Linear(layer4_outsize, num_classes)
 
     def __call__(self, x):
-        x = self.init_layer(x)
+        x = self.stem(x)
         print(x.shape)
         x = self.layer1(x)
         x = self.layer2(x)
