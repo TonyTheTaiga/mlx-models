@@ -57,15 +57,15 @@ class BottleneckBlock(nn.Module):
             kernel_size=3,
             stride=stride,
             padding=1,
-            bias=False
+            bias=False,
         )
         self.bn2 = nn.BatchNorm(out_channels // 4)
         self.conv3 = nn.Conv2d(
-            in_channels=out_channels// 4,
+            in_channels=out_channels // 4,
             out_channels=out_channels,
             stride=1,
             kernel_size=1,
-            bias=False
+            bias=False,
         )
         self.bn3 = nn.BatchNorm(out_channels)
 
@@ -92,7 +92,7 @@ class Shortcut(nn.Module):
 
     def __call__(self, x: mx.array):
         x = self.pool(x)
-        x = mx.pad(x, pad_width=[(0,0), (0, 0), (0, 0), (0,self.n_dim_padding)])
+        x = mx.pad(x, pad_width=[(0, 0), (0, 0), (0, 0), (0, self.n_dim_padding)])
         return x
 
 
@@ -117,7 +117,12 @@ class ConvShortcut(nn.Module):
 
 class Layer(nn.Module):
     def __init__(
-        self, in_channels: int, out_channels: int, downsample: int, num_blocks: int, block: nn.Module
+        self,
+        in_channels: int,
+        out_channels: int,
+        downsample: int,
+        num_blocks: int,
+        block: nn.Module,
     ):
         super().__init__()
 
@@ -129,7 +134,8 @@ class Layer(nn.Module):
                 stride=2 if downsample else 1,
                 shortcut=ConvShortcut(in_channels, out_channels)
                 # shortcut=Shortcut(out_channels-in_channels)
-                if downsample else nn.Identity(),
+                if downsample
+                else nn.Identity(),
             )
         )
 
@@ -164,7 +170,7 @@ class ResNet(nn.Module):
                     kernel_size=3,
                     stride=2,
                     padding=1,
-                    bias=False
+                    bias=False,
                 ),
                 nn.BatchNorm(32),
                 nn.Conv2d(
@@ -173,7 +179,7 @@ class ResNet(nn.Module):
                     kernel_size=3,
                     stride=1,
                     padding=1,
-                    bias=False
+                    bias=False,
                 ),
                 nn.BatchNorm(32),
                 nn.Conv2d(
@@ -182,7 +188,7 @@ class ResNet(nn.Module):
                     kernel_size=3,
                     stride=1,
                     padding=1,
-                    bias=False
+                    bias=False,
                 ),
                 nn.BatchNorm(init_layer_outsize),
                 nn.ReLU(),
@@ -196,7 +202,7 @@ class ResNet(nn.Module):
             out_channels=layer1_outsize,
             downsample=False,
             num_blocks=3,
-            block=Block
+            block=Block,
         )
 
         layer2_outsize = l2_size
@@ -205,7 +211,7 @@ class ResNet(nn.Module):
             out_channels=layer2_outsize,
             downsample=True,
             num_blocks=4,
-            block=Block
+            block=Block,
         )
 
         layer3_outsize = l3_size
@@ -214,7 +220,7 @@ class ResNet(nn.Module):
             out_channels=layer3_outsize,
             downsample=True,
             num_blocks=6,
-            block=Block
+            block=Block,
         )
 
         layer4_outsize = l4_size
@@ -223,7 +229,7 @@ class ResNet(nn.Module):
             out_channels=layer4_outsize,
             downsample=True,
             num_blocks=3,
-            block=Block
+            block=Block,
         )
 
         self.classifier = nn.Linear(layer4_outsize, num_classes)
@@ -255,7 +261,7 @@ class ResNet50(nn.Module):
                     kernel_size=3,
                     stride=2,
                     padding=3,
-                    bias=False
+                    bias=False,
                 ),
                 nn.BatchNorm(32),
                 nn.Conv2d(
@@ -264,7 +270,7 @@ class ResNet50(nn.Module):
                     kernel_size=3,
                     stride=1,
                     padding=1,
-                    bias=False
+                    bias=False,
                 ),
                 nn.BatchNorm(32),
                 nn.Conv2d(
@@ -273,7 +279,7 @@ class ResNet50(nn.Module):
                     kernel_size=3,
                     stride=1,
                     padding=1,
-                    bias=False
+                    bias=False,
                 ),
                 nn.BatchNorm(init_layer_outsize),
                 nn.ReLU(),
@@ -287,7 +293,7 @@ class ResNet50(nn.Module):
             out_channels=layer1_outsize,
             downsample=False,
             num_blocks=3,
-            block=BottleneckBlock
+            block=BottleneckBlock,
         )
 
         layer2_outsize = l2_size
@@ -296,7 +302,7 @@ class ResNet50(nn.Module):
             out_channels=layer2_outsize,
             downsample=True,
             num_blocks=4,
-            block=BottleneckBlock
+            block=BottleneckBlock,
         )
 
         layer3_outsize = l3_size
@@ -305,7 +311,7 @@ class ResNet50(nn.Module):
             out_channels=layer3_outsize,
             downsample=True,
             num_blocks=6,
-            block=BottleneckBlock
+            block=BottleneckBlock,
         )
 
         layer4_outsize = l4_size
@@ -314,7 +320,7 @@ class ResNet50(nn.Module):
             out_channels=layer4_outsize,
             downsample=True,
             num_blocks=3,
-            block=BottleneckBlock
+            block=BottleneckBlock,
         )
 
         self.classifier = nn.Linear(layer4_outsize, num_classes)
