@@ -47,7 +47,7 @@ class BottleneckBlock(nn.Module):
             in_channels=in_channels,
             out_channels=out_channels // 4,
             kernel_size=1,
-            stride=stride,
+            stride=1,
             bias=False,
         )
         self.bn1 = nn.BatchNorm(out_channels // 4)
@@ -55,7 +55,7 @@ class BottleneckBlock(nn.Module):
             in_channels=out_channels // 4,
             out_channels=out_channels // 4,
             kernel_size=3,
-            stride=1,
+            stride=stride,
             padding=1,
             bias=False
         )
@@ -92,29 +92,25 @@ class Shortcut(nn.Module):
 
     def __call__(self, x: mx.array):
         x = self.pool(x)
-        # mx.pad()
-        # projecting might be less dynamic
-        # b, h, w, _ = x.shape
-        # padding = mx.zeros((b, h, w, self.n_dim_padding), dtype=mx.float32)
         x = mx.pad(x, pad_width=[(0,0), (0, 0), (0, 0), (0,self.n_dim_padding)])
-        # x = mx.concatenate([x, padding], axis=-1)
-
         return x
 
 
 class ConvShortcut(nn.Module):
     def __init__(self, in_channels, out_channels):
         super().__init__()
+        self.pool = nn.AvgPool2d(kernel_size=2, stride=2)
         self.conv = nn.Conv2d(
             in_channels=in_channels,
             out_channels=out_channels,
             kernel_size=1,
-            stride=2,
+            stride=1,
             bias=False,
         )
         self.bn = nn.BatchNorm(out_channels)
 
     def __call__(self, x):
+        x = self.pool(x)
         x = self.conv(x)
         return self.bn(x)
 
@@ -160,14 +156,14 @@ class ResNet(nn.Module):
         init_layer_outsize = l1_size
 
         # stem as proposed in resnet-c
-        self.init_layer = nn.Sequential(
+        self.stem = nn.Sequential(
             *[
                 nn.Conv2d(
                     in_channels=in_channels,
                     out_channels=32,
                     kernel_size=3,
                     stride=2,
-                    padding=3,
+                    padding=1,
                     bias=False
                 ),
                 nn.BatchNorm(32),
@@ -190,7 +186,7 @@ class ResNet(nn.Module):
                 ),
                 nn.BatchNorm(init_layer_outsize),
                 nn.ReLU(),
-                nn.MaxPool2d(kernel_size=3, stride=2, padding=1),
+                nn.MaxPool2d(kernel_size=3, stride=2, padding=0),
             ]
         )
 
@@ -233,7 +229,7 @@ class ResNet(nn.Module):
         self.classifier = nn.Linear(layer4_outsize, num_classes)
 
     def __call__(self, x):
-        x = self.init_layer(x)
+        x = self.stem(x)
         x = self.layer1(x)
         x = self.layer2(x)
         x = self.layer3(x)
@@ -325,6 +321,7 @@ class ResNet50(nn.Module):
 
     def __call__(self, x):
         x = self.init_layer(x)
+        print(x.shape)
         x = self.layer1(x)
         x = self.layer2(x)
         x = self.layer3(x)
@@ -332,8 +329,3 @@ class ResNet50(nn.Module):
         x = mx.mean(x, (1, 2))
         x = self.classifier(x)
         return x
-
-if __name__ == "__main__":
-    network = ResNet50(3, num_classes=10)
-    t = mx.random.uniform(0.0, 1.0, shape=(4, 224, 224, 3))
-    print(network(t).shape)
