@@ -336,3 +336,12 @@ class ResNet50(nn.Module):
         x = mx.mean(x, (1, 2))
         x = self.classifier(x)
         return x
+
+
+if __name__ == "__main__":
+    network = ResNet50(3, num_classes=10)
+    t = mx.random.uniform(0.0, 1.0, shape=(4, 224, 224, 3))
+    print(network(t).shape)
+    # logits = network(t)
+    # print(logits.shape)
+
