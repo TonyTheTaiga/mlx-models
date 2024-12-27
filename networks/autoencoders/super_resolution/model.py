@@ -10,12 +10,13 @@ class ResidualEncoderBlock(nn.Module):
         self.conv1 = nn.Conv2d(input_dim, output_dim, kernel_size=3, padding=1)
         self.conv2 = nn.Conv2d(output_dim, output_dim, kernel_size=3, padding=1)
         self.relu = nn.ReLU()
+        self.project = nn.Conv2d(input_dim, output_dim, kernel_size=1)
 
     def __call__(self, x):
         identity = x
         x = self.relu(self.conv1(x))
         x = self.conv2(x)
-        x = self.relu(identity + x)
+        x = self.relu(self.project(identity) + x)
         return x
 
 
