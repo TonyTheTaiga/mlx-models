@@ -41,7 +41,7 @@ class Encoder(nn.Module):
         layers = []
         layers.append(EncoderBlock(input_dim, 64))
         for idx in range(len(dims) - 1):
-            layers.append(ResidualEncoderBlock(dims[idx], dims[idx + 1]))
+            layers.append(EncoderBlock(dims[idx], dims[idx + 1]))
 
         self.layers = layers
 
