@@ -38,7 +38,7 @@ class Encoder(nn.Module):
             x = layer(x)
             skip.append(x)
 
-        return x + identity, skip
+        return x + identity, identity, skip
 
 
 class Decoder(nn.Module):
@@ -54,12 +54,16 @@ class Decoder(nn.Module):
                     PixelShuffle(2),
                 ]
             )
-
-        layers.extend([nn.Conv2d(input_dim, output_dim, kernel_size=3, padding=1, stride=1)])
+        self.upscale = nn.Upsample(scale_factor=scale_factor, mode='cubic')
+        self.final = nn.Conv2d(input_dim, output_dim, kernel_size=3, padding=1)
+        # layers.extend([nn.Conv2d(input_dim, output_dim, kernel_size=3, padding=1, stride=1)])
         self.layers = nn.Sequential(*layers)
 
-    def __call__(self, x):
-        return self.layers(x)
+
+
+    def __call__(self, x, skip):
+        x = self.layers(x)
+        return self.final(x + self.upscale(skip))
 
 
 class PixelShuffle(nn.Module):
@@ -96,18 +100,20 @@ class SuperResolution(nn.Module):
         self.decoder = Decoder(latent_dim, 3, upscale)
 
     def __call__(self, x):
-        x, _ = self.encoder(x)
-        x = self.decoder(x)
+        x, identity, _ = self.encoder(x)
+        x = self.decoder(x, identity)
         return x
 
 
 if __name__ == "__main__":
     import mlx.core as mx
+    from mlx.utils import tree_flatten
 
     model = SuperResolution(upscale=4)
     _input = mx.zeros(shape=(1, 256, 160, 3))
     output = model(_input)
-    print(output.shape)
+    for k, v in tree_flatten(model.parameters()):
+        print(k, v.shape)
 
 #     _input = mx.zeros(shape=(1, 256, 160, 3 * (2**2)))
 #     print(pixel_shuffle(_input, 2).shape)
