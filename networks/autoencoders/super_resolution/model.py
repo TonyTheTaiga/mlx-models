@@ -1,4 +1,5 @@
 import mlx.nn as nn
+import mlx.core as mx
 import numpy as np
 import math
 
@@ -119,7 +120,7 @@ class PixelShuffle(nn.Module):
 
         self.upscale_factor = upscale_factor
 
-    def __call__(self, x: "mx.array"):
+    def __call__(self, x: mx.array):
         b, h, w, c = x.shape
 
         assert (
@@ -133,7 +134,7 @@ class PixelShuffle(nn.Module):
         return x
 
 
-def pixel_shuffle(x: "mx.array", upscale_factor: int):
+def pixel_shuffle(x: mx.array, upscale_factor: int):
     b, h, w, c = x.shape
 
     assert c > upscale_factor**2, f"feature dim must be greater than upscale_factor ^ 2"

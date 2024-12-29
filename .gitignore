@@ -6,3 +6,5 @@
 **/*.ipynb
 **/*.png
 **/*.npz
+**/inference.py
+**/hf.py
