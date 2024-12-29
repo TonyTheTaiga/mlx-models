@@ -1,112 +1,61 @@
 import mlx.nn as nn
 import mlx.core as mx
-import numpy as np
 import math
 
 
 class ResidualEncoderBlock(nn.Module):
-    def __init__(self, input_dim, output_dim):
+    def __init__(self, input_dim, output_dim, res_scale: float=0.1):
         super().__init__()
 
-        self.conv1 = nn.Conv2d(
-            input_dim, output_dim, kernel_size=3, padding=1, bias=False
-        )
-        self.conv2 = nn.Conv2d(
-            output_dim, output_dim, kernel_size=3, padding=1, bias=False
-        )
+        self.conv1 = nn.Conv2d(input_dim, output_dim, kernel_size=3, padding=1)
+        self.conv2 = nn.Conv2d(output_dim, output_dim, kernel_size=3, padding=1)
         self.relu = nn.ReLU()
-        self.p = nn.Conv2d(input_dim, output_dim, kernel_size=1)
+        self.res_scale = res_scale
 
     def __call__(self, x):
         identity = x
         x = self.relu(self.conv1(x))
         x = self.conv2(x)
-        x = self.relu(x + self.p(identity))
+        x = identity + (x * self.res_scale)
         return x
-
-
-class EncoderBlock(nn.Module):
-    def __init__(self, input_dim, output_dim):
-        super().__init__()
-
-        self.conv = nn.Conv2d(
-            input_dim, output_dim, kernel_size=3, padding=1, bias=False
-        )
-        self.relu = nn.ReLU()
-
-    def __call__(self, x):
-        return self.relu(self.conv(x))
-
 
 class Encoder(nn.Module):
     def __init__(self, input_dim: int, output_dim: int, num_layers: int):
         super().__init__()
 
-        dims = np.geomspace(64, output_dim, num_layers)
-        dims = [math.ceil(dim) for dim in dims]  # pyright: ignore
-
+        self.conv = nn.Conv2d(input_dim, output_dim, kernel_size=3, padding=1)
         layers = []
-        layers.append(EncoderBlock(input_dim, 64))
-        for idx in range(len(dims) - 1):
-            layers.append(ResidualEncoderBlock(dims[idx], dims[idx + 1]))
+        for _ in range(num_layers):
+            layers.append(ResidualEncoderBlock(output_dim, output_dim))
 
         self.layers = layers
 
     def __call__(self, x):
         skip = []
+        x = self.conv(x)
+        identity = x
         for layer in self.layers:
             x = layer(x)
             skip.append(x)
 
-        return x, skip
-
-
-class FSRCNNEncoder(nn.Module):
-    def __init__(self, input_dims, output_dims):
-        super().__init__()
-
-        self.layers = nn.Sequential(
-            nn.Conv2d(input_dims, output_dims, kernel_size=5, padding=2),
-            nn.ReLU(),
-            nn.Conv2d(output_dims, output_dims // 2, kernel_size=1),
-            nn.ReLU(),
-            nn.Conv2d(output_dims // 2, output_dims // 2, kernel_size=3, padding=1),
-            nn.ReLU(),
-            nn.Conv2d(output_dims // 2, output_dims // 2, kernel_size=3, padding=1),
-            nn.ReLU(),
-            nn.Conv2d(output_dims // 2, output_dims // 2, kernel_size=3, padding=1),
-            nn.ReLU(),
-            nn.Conv2d(output_dims // 2, output_dims // 2, kernel_size=3, padding=1),
-            nn.ReLU(),
-            nn.Conv2d(output_dims // 2, output_dims, kernel_size=1),
-            nn.ReLU(),
-        )
+        return x + identity, skip
 
 
 class Decoder(nn.Module):
-    def __init__(self, input_dim: int, output_dim: int, num_layers: int):
+    def __init__(self, input_dim: int, output_dim: int, scale_factor: int):
         super().__init__()
 
-        dims = np.geomspace(input_dim, 64, num_layers).tolist()
-        dims = [math.ceil(dim) for dim in dims]  # pyright: ignore
-
+        num_upsamples = int(math.log2(scale_factor))
         layers = []
-        for idx in range(len(dims) - 1):
+        for _ in range(num_upsamples):
             layers.extend(
                 [
-                    nn.Upsample(scale_factor=2, mode="nearest"),
-                    nn.Conv2d(
-                        dims[idx], dims[idx + 1], kernel_size=3, padding=1, stride=1
-                    ),
+                    nn.Conv2d(input_dim, input_dim * 4, kernel_size=3, padding=1),
+                    PixelShuffle(2),
                 ]
             )
 
-        layers.extend(
-            [
-                nn.Upsample(scale_factor=2, mode="nearest"),
-                nn.Conv2d(dims[-1], output_dim, kernel_size=3, padding=1, stride=1),
-            ]
-        )
+        layers.extend([nn.Conv2d(input_dim, output_dim, kernel_size=3, padding=1, stride=1)])
         self.layers = nn.Sequential(*layers)
 
     def __call__(self, x):
@@ -121,28 +70,16 @@ class PixelShuffle(nn.Module):
         self.upscale_factor = upscale_factor
 
     def __call__(self, x: mx.array):
-        b, h, w, c = x.shape
-
-        assert (
-            c > self.upscale_factor**2
-        ), f"feature dim must be greater than upscale_factor ^ 2"
-
-        c_out = c // (self.upscale_factor**2)
-        x = x.reshape(b, c_out, self.upscale_factor, self.upscale_factor, h, w)
-        x = x.transpose(0, 1, 4, 2, 5, 3)
-        x = x.reshape(b, c_out, h * self.upscale_factor, w * self.upscale_factor)
-        return x
+        return pixel_shuffle(x, self.upscale_factor)
 
 
 def pixel_shuffle(x: mx.array, upscale_factor: int):
     b, h, w, c = x.shape
-
-    assert c > upscale_factor**2, f"feature dim must be greater than upscale_factor ^ 2"
-
+    assert c % (upscale_factor**2) == 0, f"feature dim must be divisible by upscale_factor ^ 2"
     c_out = c // (upscale_factor**2)
-    x = x.reshape(b, c_out, upscale_factor, upscale_factor, h, w)
+    x = x.reshape(b, h, w, c_out, upscale_factor, upscale_factor)
     x = x.transpose(0, 1, 4, 2, 5, 3)
-    x = x.reshape(b, c_out, h * upscale_factor, w * upscale_factor)
+    x = x.reshape(b, h * upscale_factor, w * upscale_factor, c_out)
     return x
 
 
@@ -152,37 +89,25 @@ class SuperResolution(nn.Module):
         upscale: int,
         num_encoder_layers: int = 3,
         latent_dim: int = 256,
-        bottleneck: bool = False,
     ):
         super().__init__()
 
         self.encoder = Encoder(3, latent_dim, num_encoder_layers)
-
-        if bottleneck:
-            self.bottleneck = nn.Sequential(
-                nn.Conv2d(latent_dim, latent_dim, kernel_size=3, padding=1, bias=False),
-                nn.ReLU(),
-                nn.Conv2d(latent_dim, latent_dim, kernel_size=3, padding=1, bias=False),
-                nn.ReLU(),
-            )
-        else:
-            self.bottleneck = nn.Identity()
-
         self.decoder = Decoder(latent_dim, 3, upscale)
 
     def __call__(self, x):
         x, _ = self.encoder(x)
-        x = self.bottleneck(x)
         x = self.decoder(x)
         return x
 
 
-# if __name__ == "__main__":
-#     import mlx.core as mx
+if __name__ == "__main__":
+    import mlx.core as mx
 
-#     model = SuperResolution(upscale=2)
-#     _input = mx.zeros(shape=(1, 256, 160, 3))
-#     output = model(_input)
+    model = SuperResolution(upscale=4)
+    _input = mx.zeros(shape=(1, 256, 160, 3))
+    output = model(_input)
+    print(output.shape)
 
 #     _input = mx.zeros(shape=(1, 256, 160, 3 * (2**2)))
 #     print(pixel_shuffle(_input, 2).shape)
