@@ -5,16 +5,16 @@ Converts the pretrained torchvision weights into MLX format
 import numpy as np
 import torch
 import torchvision
-from einops import rearrange
 
 FEATURE_DIM = 512
+
 
 def convert():
     torch_weights = torchvision.models.VGG16_Weights.IMAGENET1K_V1.get_state_dict()
     state_dict = {}
     for k, v in torch_weights.items():
         if len(v.shape) == 4:
-            v = rearrange(v, "o i h w -> o h w i")
+            v = v.permute(0, 3, 2, 1)
         elif len(v.shape) == 2 and "classifier.0" in k:
             in_features = v.shape[1]
             spatial_dim = int(np.sqrt((in_features / FEATURE_DIM)))
