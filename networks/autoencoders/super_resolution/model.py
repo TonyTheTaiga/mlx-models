@@ -54,16 +54,16 @@ class Decoder(nn.Module):
                     PixelShuffle(2),
                 ]
             )
-        self.upscale = nn.Upsample(scale_factor=scale_factor, mode='cubic')
+        # self.upscale = nn.Upsample(scale_factor=scale_factor, mode='cubic')
         self.final = nn.Conv2d(input_dim, output_dim, kernel_size=3, padding=1)
         # layers.extend([nn.Conv2d(input_dim, output_dim, kernel_size=3, padding=1, stride=1)])
         self.layers = nn.Sequential(*layers)
 
 
 
-    def __call__(self, x, skip):
+    def __call__(self, x):
         x = self.layers(x)
-        return self.final(x + self.upscale(skip))
+        return self.final(x)
 
 
 class PixelShuffle(nn.Module):
@@ -100,8 +100,8 @@ class SuperResolution(nn.Module):
         self.decoder = Decoder(latent_dim, 3, upscale)
 
     def __call__(self, x):
-        x, identity, _ = self.encoder(x)
-        x = self.decoder(x, identity)
+        x, _, _ = self.encoder(x)
+        x = self.decoder(x)
         return x
 
 
