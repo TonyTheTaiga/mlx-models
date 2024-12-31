@@ -9,3 +9,5 @@
 **/inference.py
 **/hf.py
 !results.png
+**/*.egg-info/
+**/test*
