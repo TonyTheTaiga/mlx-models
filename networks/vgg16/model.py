@@ -84,7 +84,7 @@ if __name__ == "__main__":
         image = (image - mean) / std
         return image
 
-    model = VGG16(1000, dropout=0.1)
+    model = VGG16(1000)
     model.load_weights("weights.npz")
     image = load_image("test.jpeg")
     image = mx.array(image)
