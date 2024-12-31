@@ -1,5 +1,6 @@
 import mlx.core as mx
 import mlx.nn as nn
+from numpy import isin
 
 
 def adaptive_avg_pool_2d(x: mx.array, output_size: tuple[int, int]):
@@ -63,6 +64,16 @@ class VGG16(nn.Module):
         x = x.reshape(x.shape[0], -1)
         return self.classifier(x)
 
+    def extract_features(self, x: mx.array):
+        features = []
+        for layer in self.features.children()["layers"]:
+            if isinstance(layer, nn.MaxPool2d):
+                features.append(x)
+
+            x = layer(x)
+
+        return features
+
 
 if __name__ == "__main__":
     import mlx.core as mx
@@ -89,7 +100,8 @@ if __name__ == "__main__":
     image = load_image("test.jpeg")
     image = mx.array(image)
     image = mx.expand_dims(image, 0)
-    print(mx.argmax(mx.softmax(model(image), -1), -1))
+    model.extract_features(image)
+    # print(mx.argmax(mx.softmax(model(image), -1), -1))
 
     # x3 = np.array([[[[1.0], [2.0], [3.0], [4.0]], [[5.0], [6.0], [7.0], [8.0]]]])  # Shape: (1, 2, 4, 1)
     # x3 = mx.array(x3)
