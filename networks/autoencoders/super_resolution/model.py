@@ -54,9 +54,7 @@ class Decoder(nn.Module):
                     PixelShuffle(2),
                 ]
             )
-        # self.upscale = nn.Upsample(scale_factor=scale_factor, mode='cubic')
         self.final = nn.Conv2d(input_dim, output_dim, kernel_size=3, padding=1)
-        # layers.extend([nn.Conv2d(input_dim, output_dim, kernel_size=3, padding=1, stride=1)])
         self.layers = nn.Sequential(*layers)
 
 
