@@ -14,10 +14,10 @@ class ResidualEncoderBlock(nn.Module):
         self.res_scale = res_scale
 
     def __call__(self, x):
-        identity = x
+        shortcut = x
         x = self.relu(self.conv1(x))
         x = self.conv2(x)
-        x = identity + (x * self.res_scale)
+        x = shortcut + (x * self.res_scale)
         return x
 
 
@@ -34,13 +34,12 @@ class Encoder(nn.Module):
 
     def __call__(self, x):
         x = self.conv(x)
-        identity = x
+        shortcut = x
         for layer in self.layers:
             x = layer(x)
 
         x = self.conv_out(x)
-
-        return x + identity
+        return x + shortcut
 
 
 class Decoder(nn.Module):
