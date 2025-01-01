@@ -22,3 +22,13 @@ dynamic = ["version"]
 
 [tool.setuptools]
 packages = ["networks"]
+
+[tool.ruff]
+line-length = 100
+
+[tool.ruff.lint]
+select = ["I"]
+
+[tool.ruff.format]
+line-ending = "auto"
+skip-magic-trailing-comma = false
