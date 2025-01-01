@@ -1,10 +1,11 @@
-import mlx.nn as nn
-import mlx.core as mx
 import math
+
+import mlx.core as mx
+import mlx.nn as nn
 
 
 class ResidualEncoderBlock(nn.Module):
-    def __init__(self, input_dim, output_dim, res_scale: float=0.1):
+    def __init__(self, input_dim, output_dim, res_scale: float = 0.1):
         super().__init__()
 
         self.conv1 = nn.Conv2d(input_dim, output_dim, kernel_size=3, padding=1)
@@ -19,6 +20,7 @@ class ResidualEncoderBlock(nn.Module):
         x = identity + (x * self.res_scale)
         return x
 
+
 class Encoder(nn.Module):
     def __init__(self, input_dim: int, output_dim: int, num_layers: int):
         super().__init__()
@@ -27,18 +29,18 @@ class Encoder(nn.Module):
         layers = []
         for _ in range(num_layers):
             layers.append(ResidualEncoderBlock(output_dim, output_dim))
-
         self.layers = layers
+        self.conv_out = nn.Conv2d(output_dim, output_dim, kernel_size=3, padding=1)
 
     def __call__(self, x):
-        skip = []
         x = self.conv(x)
         identity = x
         for layer in self.layers:
             x = layer(x)
-            skip.append(x)
 
-        return x + identity, identity, skip
+        x = self.conv_out(x)
+
+        return x + identity
 
 
 class Decoder(nn.Module):
@@ -56,8 +58,6 @@ class Decoder(nn.Module):
             )
         self.final = nn.Conv2d(input_dim, output_dim, kernel_size=3, padding=1)
         self.layers = nn.Sequential(*layers)
-
-
 
     def __call__(self, x):
         x = self.layers(x)
@@ -98,7 +98,7 @@ class SuperResolution(nn.Module):
         self.decoder = Decoder(latent_dim, 3, upscale)
 
     def __call__(self, x):
-        x, _, _ = self.encoder(x)
+        x = self.encoder(x)
         x = self.decoder(x)
         return x
 

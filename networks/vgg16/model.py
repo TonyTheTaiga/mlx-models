@@ -76,9 +76,9 @@ class VGG16(nn.Module):
 
 
 if __name__ == "__main__":
+    import cv2
     import mlx.core as mx
     import numpy as np
-    import cv2
 
     def load_image(path: str):
         image = cv2.imread(path)

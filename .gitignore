@@ -13,3 +13,4 @@
 **/test*
 **/uv.lock
 **/notes.txt
+**/train.py
