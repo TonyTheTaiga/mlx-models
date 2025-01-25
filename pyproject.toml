@@ -1,0 +1,34 @@
+[build-system]
+requires = ["setuptools", "setuptools-scm"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "happy_place"
+authors = [
+    {name = "Taiga Ishida", email = "taigaishida.dev@gmail.com"},
+]
+description = "cooking"
+readme = "README.md"
+requires-python = ">=3.11"
+keywords = ["mlx"]
+license = {text = "BSD-3-Clause"}
+classifiers = [
+    "Programming Language :: Python :: 3",
+]
+dependencies = [
+    "mlx",
+]
+dynamic = ["version"]
+
+[tool.setuptools]
+packages = ["networks"]
+
+[tool.ruff]
+line-length = 100
+
+[tool.ruff.lint]
+select = ["I"]
+
+[tool.ruff.format]
+line-ending = "auto"
+skip-magic-trailing-comma = false

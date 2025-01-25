@@ -3,9 +3,7 @@ import mlx.nn as nn
 
 
 class Block(nn.Module):
-    def __init__(
-        self, in_channels, out_channels, stride: int, shortcut: nn.Module | None
-    ):
+    def __init__(self, in_channels, out_channels, stride: int, shortcut: nn.Module | None):
         super().__init__()
         self.conv1 = nn.Conv2d(
             in_channels=in_channels,
@@ -29,7 +27,7 @@ class Block(nn.Module):
         self.relu = nn.ReLU()
 
     def __call__(self, x):
-        identity = self.shortcut(x)
+        identity = self.shortcut(x)  # pyright: ignore
         x = self.conv1(x)
         x = self.bn1(x)
         x = self.relu(x)
@@ -344,4 +342,3 @@ if __name__ == "__main__":
     print(network(t).shape)
     # logits = network(t)
     # print(logits.shape)
-
