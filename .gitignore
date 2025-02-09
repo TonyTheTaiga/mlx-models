@@ -4,11 +4,10 @@
 **/.DS_Store
 **/__pycache__
 **/*.ipynb
-**/*.png
 **/*.npz
 **/inference.py
 **/hf.py
-!results.png
+!**/results.png
 **/*.egg-info/
 **/test*
 **/uv.lock
