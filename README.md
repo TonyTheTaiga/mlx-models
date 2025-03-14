@@ -1,10 +1,10 @@
-# MLX Models
+# Neural Network Models Collection
 
-A collection of neural network architectures implemented in [MLX](https://ml-explore.github.io/mlx/build/html/index.html), Apple's machine learning framework for efficient computation on Mac hardware, particularly leveraging Apple Silicon.
+A collection of neural network architectures implemented in various frameworks, with initial focus on [MLX](https://ml-explore.github.io/mlx/build/html/index.html), Apple's machine learning framework for efficient computation on Mac hardware.
 
 ## Overview
 
-This repository contains implementations of various neural network architectures for study and experimentation. MLX is used because it provides efficient computation without requiring high-end GPUs, making these models accessible for users with Apple Silicon Macs.
+This repository contains implementations of various neural network architectures for study and experimentation. The initial models use MLX because it provides efficient computation without requiring high-end GPUs, making these models accessible for users with Apple Silicon Macs. Future implementations may target other frameworks.
 
 ## Models
 
@@ -64,11 +64,12 @@ Helper functions and components used across different models.
 ## Requirements
 
 - Python 3.11+
-- MLX
+- Framework-specific dependencies (currently MLX)
 
 ## Future Work
 
-Tools to convert models to other popular frameworks may be added in the future.
+- Additional model architectures
+- Conversion tools between frameworks
 
 ## License
 
