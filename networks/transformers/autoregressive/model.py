@@ -115,7 +115,6 @@ class DecoderLayer(nn.Module):
     ):
         attn_weights, kv_cache = self.attn(self.ln1(x), kv_cache=kv_cache, mask=mask)
         x = attn_weights + x
-        # return self.ff(self.ln2(attn_weights)) + x, kv_cache
         return self.ff(self.ln2(x)) + x, kv_cache
 
 
