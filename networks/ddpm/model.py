@@ -78,10 +78,11 @@ class UNET(nn.Module):
 
         # upsampling layers
         self.up = nn.Upsample(scale_factor=2, mode="nearest")
-        self.u_4_rb = Block(256, 128)
-        self.u_3_rb = Block(128, 64)
-        self.u_2_rb = Block(64, 32)
+        self.u_4_rb = Block(256 + 256, 128)
+        self.u_3_rb = Block(128 + 128, 64)
+        self.u_2_rb = Block(64 + 64, 32)
 
+        self.gp = nn.GroupNorm(8, 32)
         self.out = nn.Conv2d(32, 1, kernel_size=1)
 
     def __call__(self, x: mx.array, time_embedding: mx.array):
@@ -100,8 +101,18 @@ class UNET(nn.Module):
                 x = conv(x)
 
         x = self.bn(x, time_embedding)
-        skips.pop()
+        for res in [self.u_4_rb, self.u_3_rb, self.u_2_rb]:
+            skip = skips.pop()
+            if x.shape[1] != skip.shape[1]:
+                if x.shape[1] > skip.shape[1]:
+                    x = x[:, : skip.shape[1], : skip.shape[2], :]
 
+            x = mx.concat([x, skip], axis=-1)
+            x = res(x, time_embedding)
+            x = self.up(x)
+
+        x = self.gp(x)
+        x = self.out(nn.silu(x))
         return x
 
 
@@ -114,3 +125,4 @@ if __name__ == "__main__":
     tembed = tembedder(t)
     network = UNET()
     out = network(x, tembed)
+    print(out.shape)
