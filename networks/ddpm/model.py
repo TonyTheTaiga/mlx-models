@@ -16,6 +16,7 @@ class TimeEmbedding(nn.Module):
         self._te[:, 1::2] = mx.cos(pos * div)
 
     def __call__(self, t):
+        # try adding mlp here?
         return self._te[t]
 
 
@@ -88,7 +89,6 @@ class UNET(nn.Module):
     def __call__(self, x: mx.array, time_embedding: mx.array):
         x = self.stem(x)
         skips = []
-
         for res, conv in [
             (self.d_1_rb, self.d_1),
             (self.d_2_rb, self.d_2),
