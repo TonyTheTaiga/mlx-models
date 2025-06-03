@@ -8,15 +8,15 @@ class TimeEmbedding(nn.Module):
     def __init__(self, dim: int, max_t: int):
         super().__init__()
 
-        self._pe = mx.zeros(shape=(max_t, dim))
+        self._te = mx.zeros(shape=(max_t, dim))
         pos = mx.arange(0, max_t, dtype=mx.float32)
         pos = mx.expand_dims(pos, 1)
         div = mx.exp(mx.arange(0, dim, 2, dtype=mx.float32) * (-math.log(10000) / dim))
-        self._pe[:, 0::2] = mx.sin(pos * div)
-        self._pe[:, 1::2] = mx.cos(pos * div)
+        self._te[:, 0::2] = mx.sin(pos * div)
+        self._te[:, 1::2] = mx.cos(pos * div)
 
     def __call__(self, t):
-        return self._pe[t]
+        return self._te[t]
 
 
 class FiLM(nn.Module):
