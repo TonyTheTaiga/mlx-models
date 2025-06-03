@@ -3,7 +3,7 @@ requires = ["setuptools", "setuptools-scm"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "mlx-models"
+name = "networks"
 authors = [{ name = "Taiga Ishida", email = "taigaishida.dev@gmail.com" }]
 description = "cooking"
 readme = "README.md"
@@ -14,8 +14,10 @@ classifiers = ["Programming Language :: Python :: 3"]
 dependencies = ["mlx"]
 dynamic = ["version"]
 
-[tool.setuptools]
-packages = ["networks"]
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["networks*"]
+exclude = ["tests*", "tools*"]
 
 [tool.ruff]
 line-length = 100
@@ -26,4 +28,3 @@ select = ["I"]
 [tool.ruff.format]
 line-ending = "auto"
 skip-magic-trailing-comma = false
-
