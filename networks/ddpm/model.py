@@ -37,8 +37,8 @@ class FiLM(nn.Module):
         x = self.h1(x)
         x = nn.silu(x)
         x = self.h2(x)
-        gamma, beta = mx.split(x, 2, axis=-1)
-        return gamma, beta
+        scale, shift = mx.split(x, 2, axis=-1)
+        return scale, shift
 
 
 class Block(nn.Module):
@@ -47,18 +47,19 @@ class Block(nn.Module):
 
         self.identity = nn.Identity() if idim == odim else nn.Conv2d(idim, odim, 1)
         self.cn1 = nn.Conv2d(idim, odim, kernel_size=3, stride=1, padding=1)
-        self.gn1 = nn.GroupNorm(8, odim)
+        self.n1 = nn.RMSNorm(odim)
+        # self.gn1 = nn.GroupNorm(8, odim)
         self.cn2 = nn.Conv2d(odim, odim, kernel_size=3, stride=1, padding=1)
-        self.gn2 = nn.GroupNorm(8, odim)
+        self.n2 = nn.RMSNorm(odim)
+        # self.gn2 = nn.GroupNorm(8, odim)
         self.film = FiLM(embed_dim, odim)
 
     def __call__(self, x: mx.array, time_embedding: mx.array) -> mx.array:
-        gamma, beta = self.film(time_embedding)
-
-        x_1 = self.gn1(self.cn1(x))
-        x_1 = (1 + gamma)[:, None, None, :] * x_1 + beta[:, None, None, :]
+        scale, shift = self.film(time_embedding)
+        x_1 = self.n1(self.cn1(x))
+        x_1 = (1 + scale)[:, None, None, :] * x_1 + shift[:, None, None, :]
         x_1 = nn.silu(x_1)
-        x_2 = nn.silu(self.gn2(self.cn2(x_1)))
+        x_2 = nn.silu(self.n2(self.cn2(x_1)))
         return x_2 + self.identity(x)
 
 
@@ -87,7 +88,8 @@ class UNET(nn.Module):
         self.u_3_rb = Block(128 + 128, 64, t_dim)
         self.u_2_rb = Block(64 + 64, 32, t_dim)
 
-        self.gp = nn.GroupNorm(8, 32)
+        # self.gp = nn.GroupNorm(8, 32)
+        self.out_rb = Block(32, 32, t_dim)
         self.out = nn.Conv2d(32, 1, kernel_size=1)
 
     def __call__(self, x: mx.array, t: mx.array):
@@ -116,8 +118,8 @@ class UNET(nn.Module):
             x = res(x, time_embedding)
             x = self.up(x)
 
-        x = self.gp(x)
-        x = self.out(nn.silu(x))
+        x = self.out_rb(x, time_embedding)
+        x = self.out(x)
         return x
 
 
