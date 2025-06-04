@@ -15,9 +15,12 @@ class TimeEmbedding(nn.Module):
         self._te[:, 0::2] = mx.sin(pos * div)
         self._te[:, 1::2] = mx.cos(pos * div)
 
+        self.l1 = nn.Linear(dim, dim * 4)
+        self.l2 = nn.Linear(dim * 4, dim)
+
     def __call__(self, t):
-        # try adding mlp here?
-        return self._te[t]
+        te = self._te[t]
+        return self.l2(nn.silu(self.l1(te)))
 
 
 class FiLM(nn.Module):
@@ -39,7 +42,7 @@ class FiLM(nn.Module):
 
 
 class Block(nn.Module):
-    def __init__(self, idim, odim, embed_dim=128):
+    def __init__(self, idim, odim, embed_dim=256):
         super().__init__()
 
         self.identity = nn.Identity() if idim == odim else nn.Conv2d(idim, odim, 1)
@@ -60,33 +63,35 @@ class Block(nn.Module):
 
 
 class UNET(nn.Module):
-    def __init__(self):
+    def __init__(self, t, t_dim):
         super().__init__()
 
+        self.time_embedder = TimeEmbedding(t_dim, t)
         self.stem = nn.Conv2d(1, 32, kernel_size=3, padding=1, stride=1)
 
         # downsampling layers
-        self.d_1_rb = Block(32, 32)
+        self.d_1_rb = Block(32, 32, t_dim)
         self.d_1 = nn.Conv2d(32, 64, 3, stride=2, padding=1)
-        self.d_2_rb = Block(64, 64)
+        self.d_2_rb = Block(64, 64, t_dim)
         self.d_2 = nn.Conv2d(64, 128, 3, stride=2, padding=1)
-        self.d_3_rb = Block(128, 128)
+        self.d_3_rb = Block(128, 128, t_dim)
         self.d_3 = nn.Conv2d(128, 256, 3, stride=2, padding=1)
-        self.d_4_rb = Block(256, 256)
+        self.d_4_rb = Block(256, 256, t_dim)
 
         # bottleneck@256d
-        self.bn = Block(256, 256)
+        self.bn = Block(256, 256, t_dim)
 
         # upsampling layers
         self.up = nn.Upsample(scale_factor=2, mode="nearest")
-        self.u_4_rb = Block(256 + 256, 128)
-        self.u_3_rb = Block(128 + 128, 64)
-        self.u_2_rb = Block(64 + 64, 32)
+        self.u_4_rb = Block(256 + 256, 128, t_dim)
+        self.u_3_rb = Block(128 + 128, 64, t_dim)
+        self.u_2_rb = Block(64 + 64, 32, t_dim)
 
         self.gp = nn.GroupNorm(8, 32)
         self.out = nn.Conv2d(32, 1, kernel_size=1)
 
-    def __call__(self, x: mx.array, time_embedding: mx.array):
+    def __call__(self, x: mx.array, t: mx.array):
+        time_embedding = self.time_embedder(t)
         x = self.stem(x)
         skips = []
         for res, conv in [
@@ -121,8 +126,8 @@ if __name__ == "__main__":
     B = 2
     x = mx.random.uniform(shape=(B, 28, 28, 1), dtype=mx.float32)
     t = mx.random.randint(0, T, shape=(B,), dtype=mx.int32)
-    tembedder = TimeEmbedding(128, T)
-    tembed = tembedder(t)
-    network = UNET()
-    out = network(x, tembed)
+    network = UNET(T, 128)
+
+    print(t)
+    out = network(x, t)
     print(out.shape)
