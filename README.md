@@ -52,6 +52,19 @@ Classic CNN architecture for image classification, also used as a feature extrac
 - Provides feature extraction capabilities at different network depths
 - Includes weight conversion utility
 
+### DDPM (Denoising Diffusion Probabilistic Models)
+
+Location: `networks/ddpm/`
+
+Generative model based on denoising diffusion processes for high-quality image synthesis.
+
+- U-Net architecture with time conditioning for noise prediction
+- Sinusoidal time embeddings with learned transformations
+- FiLM (Feature-wise Linear Modulation) for time-conditional generation
+- ResNet-style blocks with RMSNorm for stable training
+- Skip connections between encoder and decoder paths
+- Supports variable timesteps for flexible sampling schedules
+
 ### Utilities
 
 Location: `networks/utils/`
@@ -70,7 +83,3 @@ Helper functions and components used across different models.
 
 - Additional model architectures
 - Conversion tools between frameworks
-
-## License
-
-BSD-3-Clause
