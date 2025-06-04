@@ -29,7 +29,6 @@ POST_VAR = BETA * (1 - ALPHABAR_PREV) / (1 - ALPHABAR)
 POST_VAR[0] = 0.0
 C1 = (mx.sqrt(ALPHABAR_PREV) * BETA) / (1 - ALPHABAR)
 C2 = (mx.sqrt(ALPHA) * (1 - ALPHABAR_PREV)) / (1 - ALPHABAR)
-# C1[0] = C2[0] = 0.0
 
 
 def load_mnist() -> dict[str, mx.array]:
@@ -116,12 +115,6 @@ def sample_image(model: UNET):
     for _t in reversed(range(T)):
         t = mx.full(shape=(1,), vals=_t, dtype=mx.int32)
         noise = model(x, t)
-        # print(
-        #     x.shape,
-        #     noise.shape,
-        #     mx.take(ALPHABAR_SQRT_OM, t).shape,
-        #     mx.take(ALPHABAR_SQRT, t).shape,
-        # )
         clean = (x - ALPHABAR_SQRT_OM[t][:, None, None, None] * noise) / ALPHABAR_SQRT[t]
         mean = C1[t][:, None, None, None] * clean + C2[t][:, None, None, None] * x
 
@@ -178,7 +171,6 @@ def main():
             mx.eval(unet.parameters(), optimizer.state)
             culm_loss += loss.item() * (x_clean.shape[0])
             num_samples += x_clean.shape[0]
-            # tora.log(name="step_loss", value=loss.item(), step=steps)
 
         epoch_loss = culm_loss / num_samples
         tora.log(name="epoch_loss", value=float(epoch_loss), step=epoch)
