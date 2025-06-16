@@ -12,7 +12,11 @@ DATASET_ROOT = Path("/Users/taigaishida/workspace/mlx-models/pedestrians/")
 def dataloader(data, batch_size):
     idx = mx.random.permutation(len(data))
     for start in range(0, len(data), batch_size):
-        yield data[idx[start : start + batch_size]]
+        yield (
+            data[0][idx[start : start + batch_size]],
+            data[1][idx[start : start + batch_size]],
+            data[2][idx[start : start + batch_size]],
+        )
 
 
 def main():
@@ -20,13 +24,19 @@ def main():
     anchors = generate_anchors([1, 2, 3, 1 / 2, 1 / 3], feature_map_sizes=[37, 18, 9, 5, 3, 1])
     dataset = prepare_ssd_dataset(data, anchors)
     model = SSD300(num_classes=2)  # pedestrian + background
+
     # load vgg16 weights
     model.load_weights(
         "/Users/taigaishida/workspace/mlx-models/networks/vgg16/weights.npz",
         strict=False,
     )
     image = mx.expand_dims(data[0]["resized_image"], 0)
-    model(image)
+    pred_loc, pred_cls = model(image)
+
+    for epoch in range(5):
+        for images, loc_targets, cls_targets in dataloader(dataset, batch_size=4):
+            print(images.shape)
+            exit()
 
 
 if __name__ == "__main__":
