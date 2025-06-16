@@ -107,5 +107,4 @@ class SSD300(nn.Module):
                 else:
                     features.append(x)
 
-        print([f.shape for f in features])
         return features

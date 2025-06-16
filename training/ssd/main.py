@@ -3,6 +3,7 @@ import random
 from collections import namedtuple
 import json
 from pathlib import Path
+from dataclasses import dataclass
 
 import cv2
 import mlx.core as mx
@@ -11,6 +12,14 @@ from networks.ssd.model import SSD300
 from networks.ssd.utils import generate_anchors
 
 DATASET_ROOT = Path("/Users/taigaishida/workspace/mlx-models/pedestrians/")
+
+
+@dataclass
+class BBox:
+    xmin: int
+    ymin: int
+    xmax: int
+    ymax: int
 
 
 def load_dataset(size=300):
@@ -25,11 +34,10 @@ def load_dataset(size=300):
             raise FileNotFoundError(f"Could not load image: {img_file}")
         data[img_id] = {"image": image}
 
-    bbox = namedtuple("BBox", "xmin ymin xmax ymax")
     for ann_file in (DATASET_ROOT / "annotations").iterdir():
         img_id = ann_file.stem
         jsn = json.loads(ann_file.read_text())
-        bboxes = [bbox(*anno["bbox"]) for anno in jsn["objects"]]
+        bboxes = [BBox(*anno["bbox"]) for anno in jsn["objects"]]
 
         if img_id not in data:
             print(f"Warning: annotation for missing image {img_id}")
@@ -47,10 +55,10 @@ def load_dataset(size=300):
         y_scale = size / h
         resized_bboxes = [
             [
-                bbox[0] * x_scale,
-                bbox[1] * y_scale,
-                bbox[2] * x_scale,
-                bbox[3] * y_scale,
+                bbox.xmin * x_scale,
+                bbox.ymin * y_scale,
+                bbox.xmax * x_scale,
+                bbox.ymax * y_scale,
             ]
             for bbox in bboxes
         ]
@@ -118,7 +126,7 @@ def main():
     )
     image = mx.expand_dims(dataset["train"][0]["resized_image"], 0)
     model(image)
-    generate_anchors([1, 2, 3, 1 / 2, 1 / 3], feature_map_sizes=[37, 18, 9, 5, 3, 1])
+    anchors = generate_anchors([1, 2, 3, 1 / 2, 1 / 3], feature_map_sizes=[37, 18, 9, 5, 3, 1])
 
 
 if __name__ == "__main__":
