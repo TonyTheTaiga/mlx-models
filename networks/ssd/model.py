@@ -6,11 +6,38 @@ class SSDHead(nn.Module):
     def __init__(self, num_classes):
         super().__init__()
 
-        self.loc_heads = []
-        self.conf_heads = []
+        self.num_classes = num_classes
+        self.loc_heads = [
+            nn.Conv2d(512, 4 * 4, kernel_size=3, padding=1),
+            nn.Conv2d(1024, 6 * 4, kernel_size=3, padding=1),
+            nn.Conv2d(512, 6 * 4, kernel_size=3, padding=1),
+            nn.Conv2d(256, 6 * 4, kernel_size=3, padding=1),
+            nn.Conv2d(256, 4 * 4, kernel_size=3, padding=1),
+            nn.Conv2d(256, 4 * 4, kernel_size=3, padding=1),
+        ]
+        self.conf_heads = [
+            nn.Conv2d(512, 4 * num_classes, kernel_size=3, padding=1),
+            nn.Conv2d(1024, 6 * num_classes, kernel_size=3, padding=1),
+            nn.Conv2d(512, 6 * num_classes, kernel_size=3, padding=1),
+            nn.Conv2d(256, 6 * num_classes, kernel_size=3, padding=1),
+            nn.Conv2d(256, 4 * num_classes, kernel_size=3, padding=1),
+            nn.Conv2d(256, 4 * num_classes, kernel_size=3, padding=1),
+        ]
 
     def __call__(self, features):
-        f1, f2, f3, f4, f5, f6 = features
+        locs, confs = [], []
+        for feature, lhead, chead in zip(features, self.loc_heads, self.conf_heads):
+            # print(lhead(feature).shape)
+            # print(lhead(feature).reshape((feature.shape[0], -1, 4)).shape)
+            locs.append(lhead(feature).reshape((feature.shape[0], -1, 4)))
+            confs.append(chead(feature).reshape((feature.shape[0], -1, self.num_classes)))
+
+        locs = mx.concat(locs, axis=1)
+        confs = mx.concat(confs, axis=1)
+
+        # print(locs.shape)
+        # print(confs.shape)
+        return locs, confs
 
 
 class SSD300(nn.Module):
@@ -107,4 +134,5 @@ class SSD300(nn.Module):
                 else:
                     features.append(x)
 
-        return features
+        # print([ft.shape for ft in features])
+        return self.head(features)
