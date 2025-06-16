@@ -215,14 +215,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-    # unet = UNET()
-    # time_embedder = TimeEmbedding(128, T)
-    # out = sample_image(unet, time_embedder)
-    # render_wide(((out + 1) / 2))
-
-    # dataset = load_mnist()
-    # sample = dataset["train"][0]
-    # render_wide(((sample + 1) / 2))
-    # noisy = add_noise(sample, mx.random.randint(0, T, (1,)))
-    # render_wide(mx.concat([((noisy + 1) / 2), ((sample + 1) / 2)], axis=1))

@@ -10,14 +10,13 @@ DATASET_ROOT = Path("/Users/taigaishida/workspace/mlx-models/pedestrians/")
 
 
 def dataloader(data, batch_size):
-    idx = mx.random.permutation(len(data))
-    for start in range(0, len(data), batch_size):
+    idx = mx.random.permutation(len(data[0]))
+    for start in range(0, len(data[0]), batch_size):
         yield (
             data[0][idx[start : start + batch_size]],
             data[1][idx[start : start + batch_size]],
             data[2][idx[start : start + batch_size]],
         )
-
 
 def main():
     data = load_data(DATASET_ROOT, 300)
@@ -30,12 +29,16 @@ def main():
         "/Users/taigaishida/workspace/mlx-models/networks/vgg16/weights.npz",
         strict=False,
     )
+    mx.eval(model.parameters())
+
     image = mx.expand_dims(data[0]["resized_image"], 0)
     pred_loc, pred_cls = model(image)
 
+
     for epoch in range(5):
         for images, loc_targets, cls_targets in dataloader(dataset, batch_size=4):
-            print(images.shape)
+            loc_predictions, cls_predictions = model(images)
+            print(loc_predictions.shape, cls_predictions.shape)
             exit()
 
 

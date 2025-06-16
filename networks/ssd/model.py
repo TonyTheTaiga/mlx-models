@@ -27,16 +27,12 @@ class SSDHead(nn.Module):
     def __call__(self, features):
         locs, confs = [], []
         for feature, lhead, chead in zip(features, self.loc_heads, self.conf_heads):
-            # print(lhead(feature).shape)
-            # print(lhead(feature).reshape((feature.shape[0], -1, 4)).shape)
             locs.append(lhead(feature).reshape((feature.shape[0], -1, 4)))
             confs.append(chead(feature).reshape((feature.shape[0], -1, self.num_classes)))
 
         locs = mx.concat(locs, axis=1)
         confs = mx.concat(confs, axis=1)
 
-        # print(locs.shape)
-        # print(confs.shape)
         return locs, confs
 
 
@@ -45,19 +41,16 @@ class SSD300(nn.Module):
         super().__init__()
 
         self.features = nn.Sequential(
-            # conv1
             nn.Conv2d(3, 64, kernel_size=3, padding=1),
             nn.ReLU(),
             nn.Conv2d(64, 64, kernel_size=3, padding=1),
             nn.ReLU(),
             nn.MaxPool2d(kernel_size=2, stride=2),
-            # conv2
             nn.Conv2d(64, 128, kernel_size=3, padding=1),
             nn.ReLU(),
             nn.Conv2d(128, 128, kernel_size=3, padding=1),
             nn.ReLU(),
             nn.MaxPool2d(kernel_size=2, stride=2),
-            # conv3
             nn.Conv2d(128, 256, kernel_size=3, padding=1),
             nn.ReLU(),
             nn.Conv2d(256, 256, kernel_size=3, padding=1),
@@ -65,7 +58,6 @@ class SSD300(nn.Module):
             nn.Conv2d(256, 256, kernel_size=3, padding=1),
             nn.ReLU(),
             nn.MaxPool2d(kernel_size=2, stride=2),
-            # conv4
             nn.Conv2d(256, 512, kernel_size=3, padding=1),
             nn.ReLU(),
             nn.Conv2d(512, 512, kernel_size=3, padding=1),
@@ -73,39 +65,30 @@ class SSD300(nn.Module):
             nn.Conv2d(512, 512, kernel_size=3, padding=1),
             nn.ReLU(),
             nn.MaxPool2d(kernel_size=2, stride=2),
-            # conv5
             nn.Conv2d(512, 512, kernel_size=3, padding=1),
             nn.ReLU(),
             nn.Conv2d(512, 512, kernel_size=3, padding=1),
             nn.ReLU(),
             nn.Conv2d(512, 512, kernel_size=3, padding=1),
             nn.ReLU(),
-            # pool5 modified to preserve spatial size
             nn.MaxPool2d(kernel_size=3, stride=1, padding=1),
-            # fc6 -> conv6 with dilation
             nn.Conv2d(512, 1024, kernel_size=3, padding=6, dilation=6),
             nn.ReLU(),
             nn.Dropout(p=dropout),
-            # fc7 -> conv7
             nn.Conv2d(1024, 1024, kernel_size=1),
             nn.ReLU(),
-            # extra layers conv8–conv11
-            # conv8
             nn.Conv2d(1024, 256, kernel_size=1),
             nn.ReLU(),
             nn.Conv2d(256, 512, kernel_size=3, stride=2, padding=1),
             nn.ReLU(),
-            # conv9
             nn.Conv2d(512, 128, kernel_size=1),
             nn.ReLU(),
             nn.Conv2d(128, 256, kernel_size=3, stride=2, padding=1),
             nn.ReLU(),
-            # conv10
             nn.Conv2d(256, 128, kernel_size=1),
             nn.ReLU(),
             nn.Conv2d(128, 256, kernel_size=3, stride=1, padding=0),
             nn.ReLU(),
-            # conv11
             nn.Conv2d(256, 128, kernel_size=1),
             nn.ReLU(),
             nn.Conv2d(128, 256, kernel_size=3, stride=1, padding=0),
@@ -117,7 +100,6 @@ class SSD300(nn.Module):
 
     def __call__(self, x: mx.array):
         features = []
-        # these layer‐indices correspond to the ReLU outputs of:
         #   22 → conv4_3 (37×37)
         #   35 → conv7   (19×19)
         #   39 → conv8_2 (10×10)
@@ -134,5 +116,4 @@ class SSD300(nn.Module):
                 else:
                     features.append(x)
 
-        # print([ft.shape for ft in features])
         return self.head(features)
