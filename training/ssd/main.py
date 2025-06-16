@@ -8,6 +8,7 @@ import math
 
 from networks.ssd.model import SSD300
 from networks.ssd.utils import generate_anchors, load_data, prepare_ssd_dataset
+from utils import decode_predictions, visualize_detections
 
 DATASET_ROOT = Path("/Users/taigaishida/workspace/mlx-models/pedestrians/")
 
