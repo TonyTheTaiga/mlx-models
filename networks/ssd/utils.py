@@ -1,4 +1,3 @@
-from collections import namedtuple
 import random
 import json
 from pathlib import Path
@@ -16,6 +15,8 @@ def load_data(dataset_root: Path, size: int = 300):
             continue
         img_id = img_file.stem
         image = cv2.imread(str(img_file))
+        image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+
         if image is None:
             raise FileNotFoundError(f"Could not load image: {img_file}")
         data[img_id] = {"image": image}
@@ -77,11 +78,11 @@ def prepare_ssd_dataset(
 
     for item in data:
         img = item["resized_image"]
-        _, H, W = img.shape
+        H, W, C = img.shape
         assert img.ndim == 3, f"Expected image to be 3D (C, H, W), but got {img.ndim}D"
 
         # 2) Load & normalize GT boxes
-        coords = mx.array(item["bboxes"], dtype=mx.float32)
+        coords = mx.array(item["resized_bboxes"], dtype=mx.float32)
         M = coords.shape[0]
 
         if M == 0:  # maybe this should be a error
@@ -153,7 +154,6 @@ def prepare_ssd_dataset(
             assert pos_mask_exp.shape == (N_priors, 1)
             assert loc_targets.shape == (N_priors, 4)
 
-        # Append individual results to their respective lists
         image_batch.append(img)
         loc_targets_batch.append(loc_targets)
         cls_targets_batch.append(cls_targets)
@@ -225,28 +225,3 @@ def generate_anchors(ratios: list[float], feature_map_sizes: list[int]):
 
     anchors = mx.array(priors_all)
     return anchors
-
-
-def show_bboxes(dataset: dict):
-    """
-    Iterate through the dataset and display each image with its bounding boxes overlaid.
-    """
-    for img_id, item in dataset.items():
-        img = item["image"].copy()
-        bboxes = item.get("bboxes", [])
-
-        for bbox in bboxes:
-            xmin, ymin, xmax, ymax = bbox
-            top_left = (int(xmin), int(ymin))
-            bottom_right = (int(xmax), int(ymax))
-            cv2.rectangle(img, top_left, bottom_right, (0, 255, 0), 2)
-
-        # Show the result
-        cv2.imshow(f"{img_id}", img)
-        key = cv2.waitKey(0)
-        # Press 'q' to quit early
-        if key == ord("q"):
-            break
-        cv2.destroyWindow(f"{img_id}")
-
-    cv2.destroyAllWindows()
