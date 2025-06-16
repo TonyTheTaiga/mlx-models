@@ -4,6 +4,7 @@ from pathlib import Path
 import mlx.core as mx
 import mlx.nn as nn
 import mlx.optimizers as optim
+import math
 
 from networks.ssd.model import SSD300
 from networks.ssd.utils import generate_anchors, load_data, prepare_ssd_dataset
@@ -21,7 +22,7 @@ def dataloader(data, batch_size):
         )
 
 
-def loss_fn(model, images: mx.array, loc_targets: mx.array, cls_targets: mx.array, alpha: float = 3.0):
+def loss_fn(model, images: mx.array, loc_targets: mx.array, cls_targets: mx.array, alpha: float = 1.0):
     """
     Calculates the SSD loss, incorporating hard negative mining for classification
     and applying localization loss only to positive samples, using MLX-friendly operations.
@@ -90,73 +91,79 @@ def loss_fn(model, images: mx.array, loc_targets: mx.array, cls_targets: mx.arra
     num_actual_pos_samples = mx.sum(pos_mask_flat)
 
     # --- Hard Negative Mining for Negative (Background) Samples ---
-    # Replace non-negative losses with a very small sentinel value (`-1e10`).
-    masked_neg_cls_losses_for_sort = mx.where(neg_mask_flat, all_cls_losses, mx.array(-1e10))
-
     # Determine how many hard negative samples to select (3x positives, capped by total negatives).
     num_hard_neg_to_select = mx.minimum(3 * num_actual_pos_samples, mx.sum(neg_mask_flat))
     num_hard_neg_to_select_py = num_hard_neg_to_select.item() # Convert MLX scalar to Python int
 
-    # Handle the edge case where there are no positive samples and no negative samples to consider.
-    if num_actual_pos_samples.item() == 0 and num_hard_neg_to_select_py == 0:
-        cls_loss = mx.array(0.0)
-    else:
-        hard_neg_cls_losses_selected = mx.array([]) # Initialize as empty MLX array
+    # Initialize hard negative losses sum
+    sum_hard_neg_cls_losses = mx.array(0.0)
+    num_hard_neg_selected = 0
 
-        # Since mx.topk does not support 'largest=True' in your MLX version,
-        # we directly proceed with the mx.sort based approach for hard negative selection.
-        if num_hard_neg_to_select_py > 0:
-            # Sort the masked negative losses in ascending order.
-            # Sentinel values (-1e10) will be at the beginning of the sorted array.
-            sorted_masked_neg_cls_losses = mx.sort(masked_neg_cls_losses_for_sort)
+    if num_hard_neg_to_select_py > 0:
+        # Get only negative losses (mask out positive ones with 0)
+        neg_cls_losses_only = mx.where(neg_mask_flat, all_cls_losses, mx.array(0.0))
 
-            # Select the last `num_hard_neg_to_select_py` elements.
-            # These are the largest (hardest) negative losses, as sentinels are at the beginning.
-            hard_neg_cls_losses_selected = sorted_masked_neg_cls_losses[-num_hard_neg_to_select_py:]
+        # Sort in descending order to get hardest negatives first
+        sorted_neg_cls_losses = mx.sort(neg_cls_losses_only)[::-1]
 
-        # Calculate the sum of the selected hard negative losses.
-        sum_hard_neg_cls_losses = mx.sum(hard_neg_cls_losses_selected) if hard_neg_cls_losses_selected.size > 0 else mx.array(0.0)
+        # Select the top hard negatives (highest losses)
+        hard_neg_cls_losses_selected = sorted_neg_cls_losses[:num_hard_neg_to_select_py]
 
-        # Combine the summed positive and hard negative losses.
-        combined_losses_sum = sum_pos_cls_losses + sum_hard_neg_cls_losses
+        # Use mx.where to filter out zeros instead of boolean indexing
+        non_zero_mask = hard_neg_cls_losses_selected > 0
+        hard_neg_cls_losses_selected = mx.where(non_zero_mask, hard_neg_cls_losses_selected, mx.array(0.0))
 
-        # Calculate the total number of samples contributing to this combined classification loss mean.
-        total_samples_for_cls_loss = num_actual_pos_samples + hard_neg_cls_losses_selected.shape[0]
+        sum_hard_neg_cls_losses = mx.sum(hard_neg_cls_losses_selected)
+        num_hard_neg_selected = mx.sum(non_zero_mask.astype(mx.int32))
 
-        # Calculate the mean classification loss, avoiding division by zero.
-        cls_loss = combined_losses_sum / mx.maximum(mx.array(1e-6), total_samples_for_cls_loss.astype(mx.float32))
+    # Combine the summed positive and hard negative losses.
+    combined_losses_sum = sum_pos_cls_losses + sum_hard_neg_cls_losses
+
+    # Calculate the total number of samples contributing to this combined classification loss mean.
+    total_samples_for_cls_loss = num_actual_pos_samples + num_hard_neg_selected
+
+    # Calculate the mean classification loss, avoiding division by zero.
+    cls_loss = combined_losses_sum / mx.maximum(mx.array(1e-6), total_samples_for_cls_loss.astype(mx.float32))
 
     # --- Total Combined Loss ---
     total_loss = cls_loss + alpha * loc_loss
 
-    # print(cls_loss.item(), loc_loss.item())
-
+    print(cls_loss.item(), loc_loss.item())
     return total_loss
 
+def cosine_decay(initial_lr, epoch, total_epochs, min_lr=0.0):
+    return min_lr + (initial_lr - min_lr) * 0.5 * (1 + math.cos(math.pi * epoch / total_epochs))
+
 def main():
-    learning_rate = 2e-4
+    initial_learning_rate = 1e-4
+    total_epochs = 50
+    min_learning_rate = 1e-5
 
     data = load_data(DATASET_ROOT, 300)
     anchors = generate_anchors([1, 2, 3, 1 / 2, 1 / 3], feature_map_sizes=[37, 18, 9, 5, 3, 1])
     dataset = prepare_ssd_dataset(data, anchors)
     model = SSD300(num_classes=2)  # pedestrian + background
     # load vgg16 weights
-    model.load_weights(
-        "/Users/taigaishida/workspace/mlx-models/networks/vgg16/weights.npz",
-        strict=False,
-    )
-    for idx, (name, module) in enumerate(model.features.named_modules()[::-1]):
-        if idx < 30:
-            module.freeze()
+    # model.load_weights(
+    #     "/Users/taigaishida/workspace/mlx-models/networks/vgg16/weights.npz",
+    #     strict=False,
+    # )
+    # for idx, (name, module) in enumerate(model.features.named_modules()[::-1]):
+    #     if idx < 30:
+    #         module.freeze()
 
     mx.eval(model.parameters())
     loss_and_grad_fn = nn.value_and_grad(model, loss_fn)
-    optimizer = optim.AdamW(learning_rate=learning_rate)
+    optimizer = optim.SGD(learning_rate=initial_learning_rate)
 
     image = mx.expand_dims(data[0]["resized_image"], 0)
     pred_loc, pred_cls = model(image)
 
-    for epoch in range(50):
+    for epoch in range(total_epochs):
+        # Update learning rate with cosine decay
+        current_lr = cosine_decay(initial_learning_rate, epoch, total_epochs, min_learning_rate)
+        optimizer.learning_rate = current_lr
+
         culm_loss = 0
         num_samples = 0
         for images, loc_targets, cls_targets in dataloader(dataset, batch_size=8):
@@ -166,7 +173,7 @@ def main():
             culm_loss += loss.item() * (images.shape[0])
             num_samples += images.shape[0]
 
-        print(f"train loss @{epoch}", culm_loss / num_samples)
+        print(f"train loss @{epoch} (lr={current_lr:.6f})", culm_loss / num_samples)
 
 
 if __name__ == "__main__":
