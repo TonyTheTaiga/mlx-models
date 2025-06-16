@@ -171,8 +171,8 @@ def split_dataset(data: dict, train_ratio: float = 0.8, seed: int = 42) -> dict[
 
 
 def linterpolate(min_scale, max_scale, m, steps):
-    Δ = (max_scale - min_scale) / (m - 1)
-    return [min_scale + Δ * (k - 1) for k in range(1, steps + 1)]
+    delta = (max_scale - min_scale) / (m - 1)
+    return [min_scale + delta * (k - 1) for k in range(1, steps + 1)]
 
 
 def generate_anchors(ratios: list[float], feature_map_sizes: list[int]):
