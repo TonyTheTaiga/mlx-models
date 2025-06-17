@@ -55,7 +55,7 @@ def loss_fn(model, images, loc_targets, cls_targets, alpha=1.0):
 
     sel = pos | hard_neg
     cls_loss = mx.sum(cls_loss_all * sel) / mx.maximum(mx.sum(sel).astype(mx.float32), 1.0)
-    return cls_loss + loc_loss
+    return (cls_loss + loc_loss, cls_loss, loc_loss)
 
 
 def cosine_decay(initial_lr, epoch, total_epochs, min_lr=0.0):
@@ -63,43 +63,54 @@ def cosine_decay(initial_lr, epoch, total_epochs, min_lr=0.0):
 
 
 def main():
-    initial_learning_rate = 1e-2
+    initial_learning_rate = 1e-3
     total_epochs = 100
     freeze_backbone = True
+    load_pretrained_weights = True
+    optim_type = 'SGD'
 
     data = load_data(DATASET_ROOT, 300)
     anchors = generate_anchors([1, 2, 3, 1 / 2, 1 / 3], feature_map_sizes=[37, 18, 9, 5, 3, 1])
     dataset = prepare_ssd_dataset(data, anchors)
     model = SSD300(num_classes=2)  # pedestrian + background
-    # load vgg16 weights
-    model.load_weights(
-        "/Users/taigaishida/workspace/mlx-models/networks/vgg16/weights.npz",
-        strict=False,
-    )
+
+    if load_pretrained_weights:
+        model.load_weights(
+            "/Users/taigaishida/workspace/mlx-models/networks/vgg16/weights.npz",
+            strict=False,
+        )
 
     if freeze_backbone:
-        for idx, (name, module) in enumerate(model.features.named_modules()[::-1]):
-            if idx < 30:
-                module.freeze()
+        if not load_pretrained_weights:
+            print('load_pretrained_weights set to False, freezing backbone is not supported')
+            freeze_backbone = False
+        else:
+            for idx, (name, module) in enumerate(model.features.named_modules()[::-1]):
+                if idx < 30:
+                    module.freeze()
 
     num_params = sum(v.size for _, v in tree_flatten(model.parameters()))
     trainable_params = sum(v.size for _, v in tree_flatten(model.trainable_parameters()))
 
     mx.eval(model.parameters())
     loss_and_grad_fn = nn.value_and_grad(model, loss_fn)
-    optimizer = optim.SGD(learning_rate=initial_learning_rate)
-    # optimizer = optim.Adam(learning_rate=initial_learning_rate)
+
+    if optim_type == 'SGD':
+        optimizer = optim.SGD(learning_rate=initial_learning_rate)
+    else:
+        optimizer = optim.Adam(learning_rate=initial_learning_rate)
 
     batch_size = 16
 
     tora = Tora.create_experiment(
         name=f"SSD_{uuid4().hex[:3]}",
-        description='finally building a ssd from scratch-ish',
+        description='SSD300, VGG16 backbone, pretrained weights obtained via torchvision',
         hyperparams={
             "architecture": "SSD300",
             "batch_size": batch_size,
             "epochs": total_epochs,
             "learning_rate": initial_learning_rate,
+            "optimizer": optim_type,
             "freeze_backbone": freeze_backbone,
             "num_trainable_params": trainable_params,
             "num_frozen_params": num_params - trainable_params,
@@ -113,22 +124,29 @@ def main():
         # optimizer.learning_rate = current_lr
 
         culm_loss = 0
+        culm_loc_loss = 0
+        culm_cls_loss = 0
         num_samples = 0
         for images, loc_targets, cls_targets in dataloader(dataset, batch_size=batch_size):
-            loss, grads = loss_and_grad_fn(model, images, loc_targets, cls_targets)
+            (loss, cls_loss, loc_loss), grads = loss_and_grad_fn(model, images, loc_targets, cls_targets)
             optimizer.update(model, grads)
             mx.eval(model.parameters(), optimizer.state)
             culm_loss += loss.item() * (images.shape[0])
+            culm_loc_loss += loc_loss.item() * (images.shape[0])
+            culm_cls_loss += cls_loss.item() * (images.shape[0])
+
             num_samples += images.shape[0]
 
         tora.log('train_loss', step=epoch, value=(culm_loss / num_samples))
+        tora.log('train_cls_loss', step=epoch, value=(culm_cls_loss / num_samples))
+        tora.log('train_loc_loss', step=epoch, value=(culm_loc_loss / num_samples))
         tora.log('lr', step=epoch, value=initial_learning_rate)
         print(f"train loss @{epoch} (lr={initial_learning_rate:.6f})", culm_loss / num_samples)
 
     image = mx.expand_dims(data[5]["resized_image"], 0)
     pred_loc, pred_cls = model(image)
 
-    detections = decode_predictions(pred_loc, pred_cls, anchors, 9.95, 0.15)
+    detections = decode_predictions(pred_loc, pred_cls, anchors, .995, 0.15)
     if detections[0]:
         original_image = np.array(data[5]["resized_image"])
         if original_image.max() <= 1.0:
