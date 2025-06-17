@@ -72,7 +72,6 @@ class SSD300(nn.Module):
             nn.Conv2d(512, 512, kernel_size=3, padding=1),
             nn.ReLU(),
             nn.MaxPool2d(kernel_size=3, stride=1, padding=1),
-
             # extras starting here
             nn.Conv2d(512, 1024, kernel_size=3, padding=6, dilation=6),
             nn.ReLU(),

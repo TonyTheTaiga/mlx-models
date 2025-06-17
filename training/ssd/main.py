@@ -9,6 +9,7 @@ import math
 from networks.ssd.model import SSD300
 from networks.ssd.utils import generate_anchors, load_data, prepare_ssd_dataset
 from utils import decode_predictions, visualize_detections
+import numpy as np
 
 DATASET_ROOT = Path("/Users/taigaishida/workspace/mlx-models/pedestrians/")
 
@@ -36,12 +37,11 @@ def loss_fn(model, images, loc_targets, cls_targets, alpha=1.0):
     loc_loss = alpha * loc_loss / mx.maximum(mx.sum(pos).astype(mx.float32), 1.0)
 
     # --- classification + hard-neg mining -----------------------------------
-    cls_loss_all = nn.losses.cross_entropy(
-        cls_preds.reshape(-1, C),
-        cls_targets.reshape(-1),
-        reduction="none").reshape(B, N)
+    cls_loss_all = nn.losses.cross_entropy(cls_preds.reshape(-1, C), cls_targets.reshape(-1), reduction="none").reshape(
+        B, N
+    )
 
-    scores = mx.stop_gradient(cls_loss_all * neg)          # <— detach
+    scores = mx.stop_gradient(cls_loss_all * neg)  # <— detach
     ranked = mx.argsort(scores, axis=1)
     k = mx.minimum(3 * mx.sum(pos, axis=1), mx.sum(neg, axis=1))
     arange_N = mx.arange(N)
@@ -53,13 +53,14 @@ def loss_fn(model, images, loc_targets, cls_targets, alpha=1.0):
     cls_loss = mx.sum(cls_loss_all * sel) / mx.maximum(mx.sum(sel).astype(mx.float32), 1.0)
     return cls_loss + loc_loss
 
+
 def cosine_decay(initial_lr, epoch, total_epochs, min_lr=0.0):
     return min_lr + (initial_lr - min_lr) * 0.5 * (1 + math.cos(math.pi * epoch / total_epochs))
 
+
 def main():
-    initial_learning_rate = 1e-2
-    total_epochs = 50
-    min_learning_rate = 1e-4
+    initial_learning_rate = 1e-3
+    total_epochs = 100
 
     data = load_data(DATASET_ROOT, 300)
     anchors = generate_anchors([1, 2, 3, 1 / 2, 1 / 3], feature_map_sizes=[37, 18, 9, 5, 3, 1])
@@ -76,26 +77,40 @@ def main():
 
     mx.eval(model.parameters())
     loss_and_grad_fn = nn.value_and_grad(model, loss_fn)
-    optimizer = optim.SGD(learning_rate=initial_learning_rate)
-
-    image = mx.expand_dims(data[0]["resized_image"], 0)
-    pred_loc, pred_cls = model(image)
+    # optimizer = optim.SGD(learning_rate=initial_learning_rate)
+    optimizer = optim.Adam(learning_rate=initial_learning_rate)
 
     for epoch in range(total_epochs):
-        # Update learning rate with cosine decay
-        current_lr = cosine_decay(initial_learning_rate, epoch, total_epochs, min_learning_rate)
-        optimizer.learning_rate = current_lr
+        # current_lr = cosine_decay(initial_learning_rate, epoch, total_epochs, min_learning_rate)
+        # optimizer.learning_rate = current_lr
 
         culm_loss = 0
         num_samples = 0
-        for images, loc_targets, cls_targets in dataloader(dataset, batch_size=8):
+        for images, loc_targets, cls_targets in dataloader(dataset, batch_size=4):
             loss, grads = loss_and_grad_fn(model, images, loc_targets, cls_targets)
             optimizer.update(model, grads)
             mx.eval(model.parameters(), optimizer.state)
             culm_loss += loss.item() * (images.shape[0])
             num_samples += images.shape[0]
 
-        print(f"train loss @{epoch} (lr={current_lr:.6f})", culm_loss / num_samples)
+        print(f"train loss @{epoch} (lr={initial_learning_rate:.6f})", culm_loss / num_samples)
+
+    image = mx.expand_dims(data[0]["resized_image"], 0)
+    pred_loc, pred_cls = model(image)
+
+    detections = decode_predictions(pred_loc, pred_cls, anchors, 0.99, 0.1)
+    if detections[0]:  # If there are detections in the first batch
+        original_image = np.array(data[0]["resized_image"])
+        if original_image.max() <= 1.0:  # If normalized, convert to 0-255
+            original_image = (original_image * 255).astype(np.uint8)
+
+        visualize_detections(
+            original_image,
+            detections[0],
+            class_names=["background", "pedestrian"],
+            save_path="detection_visualization.jpg",
+        )
+        print(f"Saved visualization with {len(detections[0])} detections to detection_visualization.jpg")
 
 
 if __name__ == "__main__":

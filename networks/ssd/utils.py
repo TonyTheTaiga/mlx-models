@@ -57,7 +57,7 @@ def load_data(dataset_root: Path, size: int = 300):
 
 
 def prepare_ssd_dataset(
-    data: list[dict], anchors: mx.array, pos_iou_thresh: float = 0.5
+    data: list[dict], anchors: mx.array, pos_iou_thresh: float = 0.4
 ) -> tuple[mx.array, mx.array, mx.array]:
     image_batch, loc_targets_batch, cls_targets_batch = [], [], []
 
