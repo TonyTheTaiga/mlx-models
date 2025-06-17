@@ -59,7 +59,7 @@ def cosine_decay(initial_lr, epoch, total_epochs, min_lr=0.0):
 
 
 def main():
-    initial_learning_rate = 1e-3
+    initial_learning_rate = 1e-2
     total_epochs = 100
 
     data = load_data(DATASET_ROOT, 300)
@@ -77,8 +77,8 @@ def main():
 
     mx.eval(model.parameters())
     loss_and_grad_fn = nn.value_and_grad(model, loss_fn)
-    # optimizer = optim.SGD(learning_rate=initial_learning_rate)
-    optimizer = optim.Adam(learning_rate=initial_learning_rate)
+    optimizer = optim.SGD(learning_rate=initial_learning_rate)
+    # optimizer = optim.Adam(learning_rate=initial_learning_rate)
 
     for epoch in range(total_epochs):
         # current_lr = cosine_decay(initial_learning_rate, epoch, total_epochs, min_learning_rate)
@@ -86,7 +86,7 @@ def main():
 
         culm_loss = 0
         num_samples = 0
-        for images, loc_targets, cls_targets in dataloader(dataset, batch_size=4):
+        for images, loc_targets, cls_targets in dataloader(dataset, batch_size=16):
             loss, grads = loss_and_grad_fn(model, images, loc_targets, cls_targets)
             optimizer.update(model, grads)
             mx.eval(model.parameters(), optimizer.state)
@@ -95,12 +95,12 @@ def main():
 
         print(f"train loss @{epoch} (lr={initial_learning_rate:.6f})", culm_loss / num_samples)
 
-    image = mx.expand_dims(data[0]["resized_image"], 0)
+    image = mx.expand_dims(data[5]["resized_image"], 0)
     pred_loc, pred_cls = model(image)
 
-    detections = decode_predictions(pred_loc, pred_cls, anchors, 0.99, 0.1)
+    detections = decode_predictions(pred_loc, pred_cls, anchors, 9.95, 0.15)
     if detections[0]:  # If there are detections in the first batch
-        original_image = np.array(data[0]["resized_image"])
+        original_image = np.array(data[5]["resized_image"])
         if original_image.max() <= 1.0:  # If normalized, convert to 0-255
             original_image = (original_image * 255).astype(np.uint8)
 
