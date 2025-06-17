@@ -63,8 +63,8 @@ def cosine_decay(initial_lr, epoch, total_epochs, min_lr=0.0):
 
 
 def main():
-    initial_learning_rate = 1e-3
-    total_epochs = 100
+    initial_learning_rate = 2e-2
+    total_epochs = 200
     freeze_backbone = True
     load_pretrained_weights = True
     optim_type = "SGD"
@@ -145,9 +145,9 @@ def main():
     image = mx.expand_dims(data[5]["resized_image"], 0)
     pred_loc, pred_cls = model(image)
 
-    detections = decode_predictions(pred_loc, pred_cls, anchors, 0.995, 0.15)
+    detections = decode_predictions(pred_loc, pred_cls, anchors, 0.95, 0.15)
     if detections[0]:
-        original_image = np.array(data[5]["resized_image"])
+        original_image = np.array(data[5]["image"])
         if original_image.max() <= 1.0:
             original_image = (original_image * 255).astype(np.uint8)
 
