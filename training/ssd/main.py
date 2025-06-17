@@ -51,29 +51,28 @@ def loss_fn(model, images, loc_targets, cls_targets, alpha=1.0):
 
     sel = pos | hard_neg
     cls_loss = mx.sum(cls_loss_all * sel) / mx.maximum(mx.sum(sel).astype(mx.float32), 1.0)
-
     return cls_loss + loc_loss
 
 def cosine_decay(initial_lr, epoch, total_epochs, min_lr=0.0):
     return min_lr + (initial_lr - min_lr) * 0.5 * (1 + math.cos(math.pi * epoch / total_epochs))
 
 def main():
-    initial_learning_rate = 1e-4
+    initial_learning_rate = 1e-2
     total_epochs = 50
-    min_learning_rate = 1e-5
+    min_learning_rate = 1e-4
 
     data = load_data(DATASET_ROOT, 300)
     anchors = generate_anchors([1, 2, 3, 1 / 2, 1 / 3], feature_map_sizes=[37, 18, 9, 5, 3, 1])
     dataset = prepare_ssd_dataset(data, anchors)
     model = SSD300(num_classes=2)  # pedestrian + background
     # load vgg16 weights
-    # model.load_weights(
-    #     "/Users/taigaishida/workspace/mlx-models/networks/vgg16/weights.npz",
-    #     strict=False,
-    # )
-    # for idx, (name, module) in enumerate(model.features.named_modules()[::-1]):
-    #     if idx < 30:
-    #         module.freeze()
+    model.load_weights(
+        "/Users/taigaishida/workspace/mlx-models/networks/vgg16/weights.npz",
+        strict=False,
+    )
+    for idx, (name, module) in enumerate(model.features.named_modules()[::-1]):
+        if idx < 30:
+            module.freeze()
 
     mx.eval(model.parameters())
     loss_and_grad_fn = nn.value_and_grad(model, loss_fn)
