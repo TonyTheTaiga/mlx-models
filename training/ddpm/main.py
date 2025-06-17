@@ -12,9 +12,10 @@ from networks.ddpm.model import UNET
 from tora import Tora  # pyright: ignore
 
 
-WORKSPACE_ID = "1b0f3823-0aaf-404f-bece-692cce36478c"
+WORKSPACE_ID = "5f0ae752-9d6d-4c67-b0ba-2fd601a83831"
 MNIST_PATH = Path("/Users/taigaishida/workspace/mlx-models/mnist/")
-T = 1000
+T = 500
+DESCRIPTION = "t_dim = 64"
 BETA_MIN = 1e-4
 BETA_MAX = 2e-2
 BETA = mx.linspace(BETA_MIN, BETA_MAX, T)
@@ -96,6 +97,22 @@ def loss_fn(model: UNET, noisey_image: mx.array, eps: mx.array, t: mx.array):
     return mx.mean((model(noisey_image, t) - eps) ** 2)
 
 
+def eval_fn(
+    model: UNET,
+    dataset,
+):
+    culm_loss = 0.0
+    nsamples = 0
+    for x_clean in dataloader(dataset, batch_size=64):
+        t = mx.random.randint(0, T, (x_clean.shape[0],), dtype=mx.int32)
+        noisy, eps = add_noise(x_clean, t)
+        loss = mx.mean((model(noisy, t) - eps) ** 2).item()
+        culm_loss += loss * x_clean.shape[0]  # pyright: ignore
+        nsamples += x_clean.shape[0]
+
+    return culm_loss / nsamples
+
+
 def dataloader(data, batch_size):
     idx = mx.random.permutation(len(data))
     for start in range(0, len(data), batch_size):
@@ -110,8 +127,14 @@ def add_noise(x: mx.array, t: mx.array):
     return x_t, eps
 
 
-def sample_image(model: UNET):
+def sample_image(model: UNET, show_progress=False):
     x = mx.random.normal(shape=(1, 28, 28, 1), dtype=mx.float32)
+
+    if show_progress:
+        print("Starting denoising process...")
+        display((x + 1) / 2)
+        print(f"Step: {T} (pure noise)")
+
     for _t in reversed(range(T)):
         t = mx.full(shape=(1,), vals=_t, dtype=mx.int32)
         noise = model(x, t)
@@ -125,6 +148,10 @@ def sample_image(model: UNET):
         else:
             x = mean
 
+        if show_progress and (_t % 100 == 0 or _t < 10):
+            print(f"\nStep: {_t}")
+            display((x + 1) / 2)
+
     return x
 
 
@@ -132,14 +159,13 @@ def main():
     batch_size = 8
     epochs = 100
     learning_rate = 1e-4
-    t_dim = 256
+    t_dim = 64
     unet = UNET(T, t_dim)
     mx.eval(unet.parameters())
     num_params = sum(v.size for _, v in tree_flatten(unet.parameters()))
-    print(num_params)
     tora = Tora.create_experiment(
         name=f"DDPM_MNIST_{uuid4().hex[:3]}",
-        description="learning ddpm using mnist",
+        description=DESCRIPTION,
         hyperparams={
             "batch_size": batch_size,
             "epochs": epochs,
@@ -175,21 +201,17 @@ def main():
         epoch_loss = culm_loss / num_samples
         tora.log(name="epoch_loss", value=float(epoch_loss), step=epoch)
 
-        samples = [sample_image(unet) for _ in range(3)]
-        samples_mx = mx.concat(samples, axis=1)
-        display(samples_mx)
+        epoch_eval_loss = eval_fn(unet, dataset["val"])
+        tora.log(name="epoch_eval_loss", value=float(epoch_eval_loss), step=epoch)
+
+        if epoch == 0 or (epoch + 1) % 10 == 0:
+            print(f"\nGenerating sample with step-by-step visualization (epoch {epoch + 1}):")
+            sample_image(unet, show_progress=True)
+        else:
+            samples = [sample_image(unet) for _ in range(3)]
+            samples_mx = mx.concat(samples, axis=1)
+            display(samples_mx)
 
 
 if __name__ == "__main__":
     main()
-
-    # unet = UNET()
-    # time_embedder = TimeEmbedding(128, T)
-    # out = sample_image(unet, time_embedder)
-    # render_wide(((out + 1) / 2))
-
-    # dataset = load_mnist()
-    # sample = dataset["train"][0]
-    # render_wide(((sample + 1) / 2))
-    # noisy = add_noise(sample, mx.random.randint(0, T, (1,)))
-    # render_wide(mx.concat([((noisy + 1) / 2), ((sample + 1) / 2)], axis=1))

@@ -1,6 +1,5 @@
 import mlx.core as mx
 import mlx.nn as nn
-from numpy import isin
 
 
 def adaptive_avg_pool_2d(x: mx.array, output_size: tuple[int, int]):
@@ -76,38 +75,5 @@ class VGG16(nn.Module):
 
 
 if __name__ == "__main__":
-    import cv2
-    import mlx.core as mx
-    import numpy as np
-
-    def load_image(path: str):
-        image = cv2.imread(path)
-        if image is None:
-            raise ValueError(f"Failed to load image at {path}")
-
-        image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-        image = cv2.resize(image, dsize=(224, 224), interpolation=cv2.INTER_LINEAR)
-        image = image / 255.0
-
-        mean = np.array([0.485, 0.456, 0.406])
-        std = np.array([0.229, 0.224, 0.225])
-
-        image = (image - mean) / std
-        return image
-
     model = VGG16(1000)
-    model.load_weights("weights.npz")
-    image = load_image("test.jpeg")
-    image = mx.array(image)
-    image = mx.expand_dims(image, 0)
-    model.extract_features(image)
-    # print(mx.argmax(mx.softmax(model(image), -1), -1))
-
-    # x3 = np.array([[[[1.0], [2.0], [3.0], [4.0]], [[5.0], [6.0], [7.0], [8.0]]]])  # Shape: (1, 2, 4, 1)
-    # x3 = mx.array(x3)
-    # result3 = adaptive_avg_pool_2d(x3, (2, 2))
-    # expected3 = np.array([[[[1.5], [3.5]], [[5.5], [7.5]]]])
-    # expected3 = mx.array(expected3)
-
-    # print(result3[0])
-    # print(expected3[0])
+    model.load_weights("weights.npz", strict=True)

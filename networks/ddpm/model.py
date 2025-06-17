@@ -20,7 +20,8 @@ class TimeEmbedding(nn.Module):
 
     def __call__(self, t):
         te = self._te[t]
-        return self.l2(nn.silu(self.l1(te)))
+        return te
+        # return self.l2(nn.silu(self.l1(te)))
 
 
 class FiLM(nn.Module):
@@ -47,11 +48,11 @@ class Block(nn.Module):
 
         self.identity = nn.Identity() if idim == odim else nn.Conv2d(idim, odim, 1)
         self.cn1 = nn.Conv2d(idim, odim, kernel_size=3, stride=1, padding=1)
-        self.n1 = nn.RMSNorm(odim)
-        # self.gn1 = nn.GroupNorm(8, odim)
+        # self.n1 = nn.RMSNorm(odim)
+        self.n1 = nn.GroupNorm(8, odim)
         self.cn2 = nn.Conv2d(odim, odim, kernel_size=3, stride=1, padding=1)
-        self.n2 = nn.RMSNorm(odim)
-        # self.gn2 = nn.GroupNorm(8, odim)
+        # self.n2 = nn.RMSNorm(odim)
+        self.n2 = nn.GroupNorm(8, odim)
         self.film = FiLM(embed_dim, odim)
 
     def __call__(self, x: mx.array, time_embedding: mx.array) -> mx.array:
@@ -88,7 +89,6 @@ class UNET(nn.Module):
         self.u_3_rb = Block(128 + 128, 64, t_dim)
         self.u_2_rb = Block(64 + 64, 32, t_dim)
 
-        # self.gp = nn.GroupNorm(8, 32)
         self.out_rb = Block(32, 32, t_dim)
         self.out = nn.Conv2d(32, 1, kernel_size=1)
 

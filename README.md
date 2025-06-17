@@ -17,6 +17,8 @@ A general-purpose convolutional neural network architecture for image classifica
 - Implements both standard ResNet and ResNet50 with bottleneck blocks
 - Includes modern design variants (ResNet-B, ResNet-C, ResNet-D) as shown in `variants.png`
 
+**Paper**: [Deep Residual Learning for Image Recognition](https://arxiv.org/abs/1512.03385) (He et al., 2015)
+
 ### Autoencoders - Super Resolution
 
 Location: `networks/autoencoders/super_resolution/`
@@ -28,6 +30,8 @@ Models that enhance low-resolution images by upscaling them to higher resolution
 - Supports perceptual loss using VGG features
 - Trained on the DIV2K dataset
 - Example results can be found in `result.png`
+
+**Paper**: [Real-Time Single Image and Video Super-Resolution Using an Efficient Sub-Pixel Convolutional Neural Network](https://arxiv.org/abs/1609.05158) (Shi et al., 2016)
 
 ### Transformers - Autoregressive
 
@@ -41,6 +45,8 @@ Text generation model using a decoder-only transformer architecture, similar to 
 - Features RMSNorm instead of LayerNorm
 - Supports temperature-based sampling for text generation
 
+**Paper**: [Attention Is All You Need](https://arxiv.org/abs/1706.03762) (Vaswani et al., 2017)
+
 ### VGG16
 
 Location: `networks/vgg16/`
@@ -51,6 +57,8 @@ Classic CNN architecture for image classification, also used as a feature extrac
 - Includes dropout for regularization
 - Provides feature extraction capabilities at different network depths
 - Includes weight conversion utility
+
+**Paper**: [Very Deep Convolutional Networks for Large-Scale Image Recognition](https://arxiv.org/abs/1409.1556) (Simonyan & Zisserman, 2014)
 
 ### DDPM (Denoising Diffusion Probabilistic Models)
 
@@ -64,6 +72,8 @@ Generative model based on denoising diffusion processes for high-quality image s
 - ResNet-style blocks with RMSNorm for stable training
 - Skip connections between encoder and decoder paths
 - Supports variable timesteps for flexible sampling schedules
+
+**Paper**: [Denoising Diffusion Probabilistic Models](https://arxiv.org/abs/2006.11239) (Ho et al., 2020)
 
 ### Utilities
 
