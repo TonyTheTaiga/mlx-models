@@ -13,7 +13,7 @@ from networks.ssd.utils import generate_anchors, load_data, prepare_ssd_dataset
 from utils import decode_predictions, visualize_detections
 import numpy as np
 
-from tora import Tora # pyright: ignore
+from tora import Tora  # pyright: ignore
 
 DATASET_ROOT = Path("/Users/taigaishida/workspace/mlx-models/pedestrians/")
 
@@ -67,7 +67,8 @@ def main():
     total_epochs = 100
     freeze_backbone = True
     load_pretrained_weights = True
-    optim_type = 'SGD'
+    optim_type = "SGD"
+    batch_size = 16
 
     data = load_data(DATASET_ROOT, 300)
     anchors = generate_anchors([1, 2, 3, 1 / 2, 1 / 3], feature_map_sizes=[37, 18, 9, 5, 3, 1])
@@ -82,7 +83,7 @@ def main():
 
     if freeze_backbone:
         if not load_pretrained_weights:
-            print('load_pretrained_weights set to False, freezing backbone is not supported')
+            print("load_pretrained_weights set to False, freezing backbone is not supported")
             freeze_backbone = False
         else:
             for idx, (name, module) in enumerate(model.features.named_modules()[::-1]):
@@ -95,16 +96,14 @@ def main():
     mx.eval(model.parameters())
     loss_and_grad_fn = nn.value_and_grad(model, loss_fn)
 
-    if optim_type == 'SGD':
+    if optim_type == "SGD":
         optimizer = optim.SGD(learning_rate=initial_learning_rate)
     else:
         optimizer = optim.Adam(learning_rate=initial_learning_rate)
 
-    batch_size = 16
-
     tora = Tora.create_experiment(
         name=f"SSD_{uuid4().hex[:3]}",
-        description='SSD300, VGG16 backbone, pretrained weights obtained via torchvision',
+        description="SSD300, VGG16 backbone, pretrained weights obtained via torchvision",
         hyperparams={
             "architecture": "SSD300",
             "batch_size": batch_size,
@@ -137,16 +136,16 @@ def main():
 
             num_samples += images.shape[0]
 
-        tora.log('train_loss', step=epoch, value=(culm_loss / num_samples))
-        tora.log('train_cls_loss', step=epoch, value=(culm_cls_loss / num_samples))
-        tora.log('train_loc_loss', step=epoch, value=(culm_loc_loss / num_samples))
-        tora.log('lr', step=epoch, value=initial_learning_rate)
+        tora.log("train_loss", step=epoch, value=(culm_loss / num_samples))
+        tora.log("train_cls_loss", step=epoch, value=(culm_cls_loss / num_samples))
+        tora.log("train_loc_loss", step=epoch, value=(culm_loc_loss / num_samples))
+        tora.log("lr", step=epoch, value=initial_learning_rate)
         print(f"train loss @{epoch} (lr={initial_learning_rate:.6f})", culm_loss / num_samples)
 
     image = mx.expand_dims(data[5]["resized_image"], 0)
     pred_loc, pred_cls = model(image)
 
-    detections = decode_predictions(pred_loc, pred_cls, anchors, .995, 0.15)
+    detections = decode_predictions(pred_loc, pred_cls, anchors, 0.995, 0.15)
     if detections[0]:
         original_image = np.array(data[5]["resized_image"])
         if original_image.max() <= 1.0:
