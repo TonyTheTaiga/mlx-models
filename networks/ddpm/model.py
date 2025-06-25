@@ -65,11 +65,11 @@ class Block(nn.Module):
 
 
 class UNET(nn.Module):
-    def __init__(self, t, t_dim):
+    def __init__(self, input_dim, t, t_dim):
         super().__init__()
 
         self.time_embedder = TimeEmbedding(t_dim, t)
-        self.stem = nn.Conv2d(1, 32, kernel_size=3, padding=1, stride=1)
+        self.stem = nn.Conv2d(input_dim, 32, kernel_size=3, padding=1, stride=1)
 
         # downsampling layers
         self.d_1_rb = Block(32, 32, t_dim)
@@ -128,7 +128,7 @@ if __name__ == "__main__":
     B = 2
     x = mx.random.uniform(shape=(B, 28, 28, 1), dtype=mx.float32)
     t = mx.random.randint(0, T, shape=(B,), dtype=mx.int32)
-    network = UNET(T, 128)
+    network = UNET(1, T, 128)
 
     print(t)
     out = network(x, t)

@@ -13,7 +13,7 @@ from networks.ssd.utils import generate_anchors, load_data, prepare_ssd_dataset
 from utils import decode_predictions, visualize_detections
 import numpy as np
 
-from tora import Tora  # pyright: ignore
+from tora import Tora
 
 DATASET_ROOT = Path("/Users/taigaishida/workspace/mlx-models/pedestrians/")
 
@@ -34,18 +34,16 @@ def loss_fn(model, images, loc_targets, cls_targets, alpha=1.0):
 
     pos = cls_targets > 0
     neg = ~pos
-
-    # --- localisation -------------------------------------------------------
     loc_loss_all = nn.losses.huber_loss(loc_preds, loc_targets, reduction="none")
     loc_loss = mx.sum(mx.where(mx.expand_dims(pos, -1), loc_loss_all, 0.0))
     loc_loss = alpha * loc_loss / mx.maximum(mx.sum(pos).astype(mx.float32), 1.0)
+    cls_loss_all = nn.losses.cross_entropy(
+        cls_preds.reshape(-1, C), cls_targets.reshape(-1), reduction="none"
+    ).reshape(B, N)
 
-    # --- classification + hard-neg mining -----------------------------------
-    cls_loss_all = nn.losses.cross_entropy(cls_preds.reshape(-1, C), cls_targets.reshape(-1), reduction="none").reshape(
-        B, N
-    )
+    # detach
+    scores = mx.stop_gradient(cls_loss_all * neg)
 
-    scores = mx.stop_gradient(cls_loss_all * neg)  # <— detach
     ranked = mx.argsort(scores, axis=1)
     k = mx.minimum(3 * mx.sum(pos, axis=1), mx.sum(neg, axis=1))
     arange_N = mx.arange(N)
@@ -64,9 +62,9 @@ def cosine_decay(initial_lr, epoch, total_epochs, min_lr=0.0):
 
 def main():
     initial_learning_rate = 2e-2
-    total_epochs = 200
+    total_epochs = 250
     freeze_backbone = True
-    load_pretrained_weights = True
+    load_pretrained_weights = False
     optim_type = "SGD"
     batch_size = 16
 
@@ -114,7 +112,6 @@ def main():
             "num_trainable_params": trainable_params,
             "num_frozen_params": num_params - trainable_params,
         },
-        workspace_id="ef58f856-078f-4d28-9808-dd5b522e39bc",
     )
     tora.max_buffer_len = 1
 
@@ -127,7 +124,9 @@ def main():
         culm_cls_loss = 0
         num_samples = 0
         for images, loc_targets, cls_targets in dataloader(dataset, batch_size=batch_size):
-            (loss, cls_loss, loc_loss), grads = loss_and_grad_fn(model, images, loc_targets, cls_targets)
+            (loss, cls_loss, loc_loss), grads = loss_and_grad_fn(
+                model, images, loc_targets, cls_targets
+            )
             optimizer.update(model, grads)
             mx.eval(model.parameters(), optimizer.state)
             culm_loss += loss.item() * (images.shape[0])
@@ -145,7 +144,7 @@ def main():
     image = mx.expand_dims(data[5]["resized_image"], 0)
     pred_loc, pred_cls = model(image)
 
-    detections = decode_predictions(pred_loc, pred_cls, anchors, 0.95, 0.15)
+    detections = decode_predictions(pred_loc, pred_cls, anchors, 0.9, 0.15)
     if detections[0]:
         original_image = np.array(data[5]["image"])
         if original_image.max() <= 1.0:
@@ -157,7 +156,9 @@ def main():
             class_names=["background", "pedestrian"],
             save_path="detection_visualization.jpg",
         )
-        print(f"Saved visualization with {len(detections[0])} detections to detection_visualization.jpg")
+        print(
+            f"Saved visualization with {len(detections[0])} detections to detection_visualization.jpg"
+        )
 
 
 if __name__ == "__main__":

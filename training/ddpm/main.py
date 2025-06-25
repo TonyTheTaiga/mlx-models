@@ -32,15 +32,21 @@ C1 = (mx.sqrt(ALPHABAR_PREV) * BETA) / (1 - ALPHABAR)
 C2 = (mx.sqrt(ALPHA) * (1 - ALPHABAR_PREV)) / (1 - ALPHABAR)
 
 
+def load_a_image(path: str | Path, read_flag=cv2.IMREAD_COLOR_BGR):
+    np_img = cv2.imread(path, read_flag)  # pyright: ignore
+    np_img = np_img / 127.5 - 1.0
+    if len(np_img.shape) == 2:
+        np_img = np.expand_dims(np_img, 2)
+
+    return np_img
+
+
 def load_mnist() -> dict[str, mx.array]:
     train = []
     train_labels = []
     for p in (MNIST_PATH / "training").rglob("**/*.png"):
-        np_img = cv2.imread(p, cv2.IMREAD_GRAYSCALE)  # pyright: ignore
-        np_img = np_img / 127.5 - 1.0
-        np_img = np.expand_dims(np_img, 2)
         train_labels.append(int(p.parent.name))
-        train.append(np_img)
+        train.append(load_a_image(p, cv2.IMREAD_GRAYSCALE))
 
     train_labels_arr = np.array(train_labels)
     train_arr = np.array(train)
@@ -48,11 +54,8 @@ def load_mnist() -> dict[str, mx.array]:
     val = []
     val_labels = []
     for p in (MNIST_PATH / "testing").rglob("**/*.png"):
-        np_img = cv2.imread(p, cv2.IMREAD_GRAYSCALE)  # pyright: ignore
-        np_img = np_img / 127.5 - 1.0
-        np_img = np.expand_dims(np_img, 2)
         val_labels.append(int(p.parent.name))
-        val.append(np_img)
+        val.append(load_a_image(p, cv2.IMREAD_GRAYSCALE))
 
     val_labels_arr = np.array(val_labels)
     val_arr = np.array(val)
@@ -160,7 +163,8 @@ def main():
     epochs = 100
     learning_rate = 1e-4
     t_dim = 64
-    unet = UNET(T, t_dim)
+    input_dim = 1
+    unet = UNET(input_dim, T, t_dim)
     mx.eval(unet.parameters())
     num_params = sum(v.size for _, v in tree_flatten(unet.parameters()))
     tora = Tora.create_experiment(
@@ -176,7 +180,6 @@ def main():
             "beta_max": BETA_MAX,
             "num_params": num_params,
         },
-        workspace_id=WORKSPACE_ID,
     )
     tora.max_buffer_len = 1
 
