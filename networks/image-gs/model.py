@@ -31,7 +31,6 @@ class Gaussian2D(nn.Module):
         rm = rotation_matrix_2d(math.pi * mx.sigmoid(self.theta))
         eps = 1e-6
         sm = scaling_matrix(nn.softplus(self.log_scales) + eps)
-        print(sm)
         cm = cov_from_r_and_s(rm, sm) + 1e-6 * mx.eye(2)
         d = x - self.mean
         return mx.exp(-0.5 * (d @ mx.linalg.solve(cm, d, stream=mx.cpu))) * self.c  # pyright: ignore
