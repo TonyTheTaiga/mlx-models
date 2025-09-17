@@ -25,9 +25,6 @@ def get_tiles(image: mx.array, t: int = 16) -> tuple[mx.array, mx.array]:
             tiles.append(image[ymin:ymax, xmin:xmax, :])
             coords.append((xmin, xmax, ymin, ymax))
 
-    # Note: `tiles` may be ragged at image borders when H or W is not a
-    # multiple of `t`. The caller only uses `coords`; we keep the return
-    # signature but recommend using the coords (pixel units).
     return mx.stack(tiles), mx.array(coords, dtype=mx.float32)
 
 

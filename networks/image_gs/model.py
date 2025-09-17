@@ -7,22 +7,17 @@ from .util import get_tiles
 
 
 class ImageGS(nn.Module):
-    def __init__(self, mean: mx.array, color: mx.array, tile_size: int):
-        """Image Gaussian Splatting model operating strictly in pixel space.
+    def __init__(self, mean: mx.array, color: mx.array, tile_size: int, k: int = 10):
+        super().__init__()
 
-        - `mean` must be pixel-center coordinates in `(x, y)` with
-          `x in [0, W-1]` and `y in [0, H-1]`.
-        - `color` is the RGB value sampled at those pixels.
-        - All geometric calculations (means, scales, radii, tiles) are in pixels.
-        """
-        B, _ = mean.shape
-
-        self.mean = mean.astype(mx.float16)
-        self.color = color.astype(mx.float16)
-        self.theta = mx.zeros(shape=(B,), dtype=mx.float16)
-        self.raw_scale = mx.random.uniform(low=-3.0, high=3.0, shape=(B, 2), dtype=mx.float16)
+        self.mean = mean.astype(mx.float32)
+        self.color = color.astype(mx.float32)
+        self.theta = mx.zeros(shape=(mean.shape[0],), dtype=mx.float32)
+        init_center = mx.array(-1.9, dtype=mx.float32)
+        self.raw_inv_scale = init_center + (0.1 * mx.random.normal(shape=(mean.shape[0], 2), dtype=mx.float32))
         self._tile_size = tile_size
-        self._tiles_and_coords = None
+        self._tiles_and_coords: tuple[mx.array, mx.array] | None = None
+        self._top_k = k
 
     def _get_tiles(self, image: mx.array):
         return get_tiles(image, self._tile_size)
@@ -56,16 +51,86 @@ class ImageGS(nn.Module):
         dy = clamped_y - cy
         return (dx * dx + dy * dy) <= (r * r)
 
+    def render(self, target_idx: mx.array, precision_matrix: mx.array):
+        assert self._tiles_and_coords is not None
+
+        tiles, coords = self._tiles_and_coords  # (Nt, Th, Tw, 3), (Nt, 4) -> [xmin, xmax, ymin, ymax]
+
+        Ng = self.mean.shape[0]
+        Nt = tiles.shape[0]
+        Th, Tw = int(tiles.shape[1]), int(tiles.shape[2])
+
+        # for mahalanobis distance calc
+        P11 = precision_matrix[:, 0, 0][:, None, None]  # (Ng, 1, 1)
+        P12 = precision_matrix[:, 0, 1][:, None, None]  # (Ng, 1, 1) == P21
+        P22 = precision_matrix[:, 1, 1][:, None, None]  # (Ng, 1, 1)
+
+        # Outputs per tile
+        out_tiles: list[mx.array] = []
+
+        for j in range(Nt):
+            # Tile pixel coordinates in absolute image space
+            xmin, _, ymin, _ = coords[j, 0], coords[j, 1], coords[j, 2], coords[j, 3]
+            xs = mx.arange(Tw, dtype=mx.float32) + xmin  # (Tw,)
+            ys = mx.arange(Th, dtype=mx.float32) + ymin  # (Th,)
+
+            XX = mx.broadcast_to(xs[None, :], (Th, Tw))  # (Th, Tw)
+            YY = mx.broadcast_to(ys[:, None], (Th, Tw))  # (Th, Tw)
+
+            # Differences to Gaussian means (broadcast over gaussians)
+            dx = XX[None, :, :] - self.mean[:, 0][:, None, None]  # (Ng, Th, Tw)
+            dy = YY[None, :, :] - self.mean[:, 1][:, None, None]  # (Ng, Th, Tw)
+
+            # Mahalanobis distance using precision matrix Lambda:
+            # q = [dx, dy]^T * Lambda * [dx, dy] = P11*dx^2 + 2*P12*dx*dy + P22*dy^2
+            q = P11 * (dx * dx) + 2.0 * P12 * (dx * dy) + P22 * (dy * dy)  # (Ng, Th, Tw)
+            w = mx.exp(-0.5 * q)  # unnormalized weight per Gaussian
+
+            # Mask by tile/gaussian visibility (3σ circle test)
+            mask_g = target_idx[:, j][:, None, None].astype(w.dtype)  # (Ng,1,1)
+            w = w * mask_g  # zero out non-overlapping Gaussians
+
+            # TODO: verify this for correctness
+            k = min(self._top_k, Ng)
+            w_sel = w.astype(mx.float32)
+            jitter = (mx.arange(Ng, dtype=mx.float32) / float(Ng))[:, None, None] * 1e-6
+            w_jit = w_sel + jitter
+            top_vals = mx.topk(w_jit, k=k, axis=0)  # (k, Th, Tw)
+            kth_val = mx.min(top_vals, axis=0)      # (Th, Tw) — threshold per pixel
+            top_mask = (w_jit >= kth_val[None, :, :]).astype(w.dtype)
+
+            # Normalize weights across selected Gaussians (avoid division by zero)
+            w_top = w * top_mask
+            denom = mx.sum(w_top, axis=0) + mx.array(1e-6, dtype=mx.float32)  # (Th, Tw)
+
+            # Blend colors over the selected Gaussians
+            rgb = mx.sum(w_top[:, :, :, None] * self.color[:, None, None, :], axis=0) / denom[:, :, None]
+            out_tiles.append(rgb)
+
+        return mx.stack(out_tiles, axis=0)
+
     def __call__(self, image: mx.array):
         if self._tiles_and_coords is None:
             self._tiles_and_coords = self._get_tiles(image=image)
 
-        rotation_matrix = self._create_rotation_matrix(theta=mx.sigmoid(self.theta) * math.pi)
+        rotation_matrix = self._create_rotation_matrix(theta=mx.sigmoid(self.theta.astype(mx.float32)) * math.pi)
         eps = 1e-6
-        sigma = nn.softplus(self.raw_scale) + eps
-
-        inv_scale = 1.0 / sigma
+        inv_scale = nn.softplus(self.raw_inv_scale) + eps
+        sigma = 1.0 / inv_scale
         precision_matrix = self._create_precision_matrix(rotation_matrix, inv_scale)
 
         radii = 3.0 * mx.maximum(sigma[:, 0], sigma[:, 1])
         target_idx = self._tile_hit(self._tiles_and_coords[1], self.mean, radii)
+        rgb_tiled = self.render(target_idx, precision_matrix)
+
+        H, W, _ = image.shape
+        Th = int(rgb_tiled.shape[1])
+        Tw = int(rgb_tiled.shape[2])
+        Ny = math.ceil(H / self._tile_size)
+        Nx = math.ceil(W / self._tile_size)
+
+        grid = mx.reshape(rgb_tiled, (Ny, Nx, Th, Tw, 3))
+        grid = mx.transpose(grid, (0, 2, 1, 3, 4))
+        rgb = mx.reshape(grid, (Ny * Th, Nx * Tw, 3))
+        H, W, _ = image.shape
+        return rgb[:H, :W, :]
