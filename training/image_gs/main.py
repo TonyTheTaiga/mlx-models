@@ -1,7 +1,7 @@
 import cv2
 import mlx.core as mx
 
-from networks.image_gs import Gaussian2D, get_tiles, image_gradient_map
+from networks.image_gs import build_model
 
 
 def main(image_path: str):
@@ -10,8 +10,8 @@ def main(image_path: str):
         raise RuntimeError("failed to load image")
 
     image_array = mx.array(image)
-    tiles, coords = get_tiles(image_array, 16)
-    gradient_map = image_gradient_map(image_array)
+    model = build_model(image_array, samples=3)
+    model(mx.random.randint(low=0, high=255, shape=(2048, 2048, 3)))
 
 
 def loss_fn(model, tiles): ...

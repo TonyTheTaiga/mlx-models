@@ -2,12 +2,14 @@ import math
 
 import mlx.core as mx
 
-from .model import Gaussian2D
 
-
-def get_tiles(image: mx.array, t: int = 16):
+def get_tiles(image: mx.array, t: int = 16) -> tuple[mx.array, mx.array]:
     """
-    images are broken up into Ht x Wt and only gaussians whose minimum enclosing circle at 3std intersect a tile is that gaussian used to calculate the position in that tile.
+    Split the image into pixel-space tiles of size up to `t x t`.
+
+    Images are broken up into Ht x Wt tiles (in pixel units) and only
+    Gaussians whose minimum enclosing circle at 3σ intersects a tile are
+    used to calculate contributions in that tile.
 
     t = 16 in the paper
     """
@@ -23,17 +25,26 @@ def get_tiles(image: mx.array, t: int = 16):
             tiles.append(image[ymin:ymax, xmin:xmax, :])
             coords.append((xmin, xmax, ymin, ymax))
 
-    return tiles, coords
-
-
-def init_gaussians(image: mx.array) -> list[Gaussian2D]: ...
+    # Note: `tiles` may be ragged at image borders when H or W is not a
+    # multiple of `t`. The caller only uses `coords`; we keep the return
+    # signature but recommend using the coords (pixel units).
+    return mx.stack(tiles), mx.array(coords, dtype=mx.float32)
 
 
 def image_gradient_map(image: mx.array) -> mx.array:
     # naive implementation - https://pyimagesearch.com/2021/05/12/image-gradients-with-opencv-sobel-and-scharr
     w = mx.array([0.2126, 0.7152, 0.0722], dtype=mx.float32)
     gray = (image * w).sum(axis=-1)
-    padded = mx.pad(gray, ((1, 1), (1, 1)), mode="edge")
+    padded = mx.pad(gray, [(1, 1), (1, 1)], mode="edge")
     dx = 0.5 * (padded[1:-1, 2:] - padded[1:-1, :-2])
     dy = 0.5 * (padded[2:, 1:-1] - padded[:-2, 1:-1])
     return mx.sqrt((dx * dx) + (dy * dy))
+
+
+def build_prob_map(gradient_map: mx.array, l: float):
+    if l < 0.0 or l > 1.0:
+        raise ValueError("lambda needs to be [0, 1]")
+
+    H, W = gradient_map.shape
+    g2 = gradient_map * gradient_map
+    return (((1 - l) * g2) / mx.sum(g2)) + (l / (H * W))
