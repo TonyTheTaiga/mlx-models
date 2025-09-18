@@ -28,7 +28,9 @@ class MultiHeadAttn(nn.Module):
         mask = mask * -1e9
         return mask
 
-    def scaled_dot_product(self, Q: mx.array, K: mx.array, V: mx.array, mask: Optional[mx.array] = None):
+    def scaled_dot_product(
+        self, Q: mx.array, K: mx.array, V: mx.array, mask: Optional[mx.array] = None
+    ):
         scores = (Q @ K.transpose(0, 1, 3, 2)) / math.sqrt(self.d_k)
         if mask is not None:
             scores = scores + mask
@@ -117,7 +119,9 @@ class DecoderLayer(nn.Module):
 
 
 class Transformer(nn.Module):
-    def __init__(self, vocab_size: int, seq_len: int, d_model: int, d_ff: int, n_heads: int, n_layers: int):
+    def __init__(
+        self, vocab_size: int, seq_len: int, d_model: int, d_ff: int, n_heads: int, n_layers: int
+    ):
         super().__init__()
 
         self.token_embedding = nn.Embedding(vocab_size, d_model)
@@ -145,7 +149,9 @@ class Transformer(nn.Module):
 
     def generate(self, x, max_gen: int = 100, temperature: float = 1.0):
         if x.shape[1] > self._seq_len:
-            raise ValueError(f"Initial sequence length {x.shape[1]} exceeds maximum allowed length {self._seq_len}")
+            raise ValueError(
+                f"Initial sequence length {x.shape[1]} exceeds maximum allowed length {self._seq_len}"
+            )
 
         cache = []
         mask = MultiHeadAttn.generate_causal_mask(x.shape[1])

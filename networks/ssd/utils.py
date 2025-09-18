@@ -1,10 +1,10 @@
-import random
 import json
-from pathlib import Path
 import math
+import random
+from pathlib import Path
 
-import mlx.core as mx
 import cv2
+import mlx.core as mx
 
 
 def load_data(dataset_root: Path, size: int = 300):
@@ -62,7 +62,9 @@ def prepare_ssd_dataset(
     image_batch, loc_targets_batch, cls_targets_batch = [], [], []
 
     N_priors = anchors.shape[0]
-    assert anchors.shape == (N_priors, 4), f"Expected anchors shape ({N_priors}, 4), but got {anchors.shape}"
+    assert anchors.shape == (N_priors, 4), (
+        f"Expected anchors shape ({N_priors}, 4), but got {anchors.shape}"
+    )
 
     # 1) Precompute anchor corners & area
     acx, acy, aw, ah = mx.split(anchors, 4, axis=1)

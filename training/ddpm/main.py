@@ -1,16 +1,15 @@
 from pathlib import Path
 from uuid import uuid4
 
+import cv2
 import mlx.core as mx
 import mlx.nn as nn
 import mlx.optimizers as optim
-import cv2
 import numpy as np
 from mlx.utils import tree_flatten
-
-from networks.ddpm.model import UNET
 from tora import Tora  # pyright: ignore
 
+from networks.ddpm.model import UNET
 
 WORKSPACE_ID = "5f0ae752-9d6d-4c67-b0ba-2fd601a83831"
 MNIST_PATH = Path("/Users/taigaishida/workspace/mlx-models/mnist/")
