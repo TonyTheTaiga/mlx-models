@@ -5,7 +5,11 @@ from .util import build_prob_map, image_gradient_map
 
 
 def build_model(
-    image: mx.array, l: float = 0.3, num_initial_gaussians: int = 2000, tile_size: int = 16
+    image: mx.array,
+    l: float = 0.3,
+    num_initial_gaussians: int = 2000,
+    tile_size: int = 16,
+    top_k: int = 10,
 ) -> ImageGS:
     height, width, _ = image.shape
     gradient_map = image_gradient_map(image)
@@ -20,7 +24,7 @@ def build_model(
         axis=-1,
     )
     colors = image[rows, cols, :]
-    return ImageGS(mean=means_norm, color=colors, tile_size=tile_size)
+    return ImageGS(mean=means_norm, color=colors, tile_size=tile_size, k=top_k)
 
 
 __all__ = ["build_model"]
