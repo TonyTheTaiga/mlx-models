@@ -7,13 +7,12 @@ from accelerate import Accelerator
 from diffusers import AutoencoderKL, DDPMScheduler, UNet2DConditionModel
 from peft import LoraConfig, get_peft_model
 from PIL import Image
+from tora import Tora
 from torch.optim import AdamW
 from torch.utils.data import DataLoader, Dataset
 from torchvision import transforms
 from tqdm.auto import tqdm
 from transformers import CLIPTextModel, CLIPTokenizer
-
-from tora import Tora
 
 
 class ImageFolderCaptionDataset(Dataset):
@@ -24,12 +23,14 @@ class ImageFolderCaptionDataset(Dataset):
         if not self.paths:
             raise ValueError(f"No JPEG images found in {root_dir}")
         self.caption = caption
-        self.transform = transforms.Compose([
-            transforms.Resize(resolution, interpolation=Image.BICUBIC),
-            transforms.CenterCrop(resolution),
-            transforms.ToTensor(),
-            transforms.Normalize([0.5] * 3, [0.5] * 3),
-        ])
+        self.transform = transforms.Compose(
+            [
+                transforms.Resize(resolution, interpolation=Image.BICUBIC),
+                transforms.CenterCrop(resolution),
+                transforms.ToTensor(),
+                transforms.Normalize([0.5] * 3, [0.5] * 3),
+            ]
+        )
 
     def __len__(self):
         return len(self.paths)
@@ -101,12 +102,8 @@ def main():
 
     tokenizer = CLIPTokenizer.from_pretrained("openai/clip-vit-large-patch14")
     text_encoder = CLIPTextModel.from_pretrained("openai/clip-vit-large-patch14")
-    vae = AutoencoderKL.from_pretrained(
-        "runwayml/stable-diffusion-v1-5", subfolder="vae"
-    )
-    unet = UNet2DConditionModel.from_pretrained(
-        "runwayml/stable-diffusion-v1-5", subfolder="unet"
-    )
+    vae = AutoencoderKL.from_pretrained("runwayml/stable-diffusion-v1-5", subfolder="vae")
+    unet = UNet2DConditionModel.from_pretrained("runwayml/stable-diffusion-v1-5", subfolder="unet")
     noise_sched = DDPMScheduler.from_pretrained(
         "runwayml/stable-diffusion-v1-5", subfolder="scheduler"
     )
@@ -176,9 +173,7 @@ def main():
 
         if accelerator.is_main_process:
             avg_epoch_loss = total_loss / len(dl)
-            tora_client.log(
-                name="train_loss", value=avg_epoch_loss, step=epoch
-            )
+            tora_client.log(name="train_loss", value=avg_epoch_loss, step=epoch)
 
         if accelerator.is_main_process:
             ckpt_dir = os.path.join(args.output_dir, f"lora-epoch{epoch + 1}")
@@ -196,4 +191,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

@@ -76,7 +76,7 @@ class PixelShuffle(nn.Module):
 
 def pixel_shuffle(x: mx.array, upscale_factor: int):
     b, h, w, c = x.shape
-    assert c % (upscale_factor**2) == 0, f"feature dim must be divisible by upscale_factor ^ 2"
+    assert c % (upscale_factor**2) == 0, "feature dim must be divisible by upscale_factor ^ 2"
     c_out = c // (upscale_factor**2)
     x = x.reshape(b, h, w, c_out, upscale_factor, upscale_factor)
     x = x.transpose(0, 1, 4, 2, 5, 3)

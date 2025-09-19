@@ -11,7 +11,7 @@ requires-python = ">=3.11"
 keywords = ["mlx"]
 license = { text = "BSD-3-Clause" }
 classifiers = ["Programming Language :: Python :: 3"]
-dependencies = ["mlx"]
+dependencies = ["mlx", "opencv-python"]
 dynamic = ["version"]
 
 [tool.setuptools.packages.find]

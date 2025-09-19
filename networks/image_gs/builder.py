@@ -1,0 +1,30 @@
+import mlx.core as mx
+
+from .model import ImageGS
+from .util import build_prob_map, image_gradient_map
+
+
+def build_model(
+    image: mx.array,
+    l: float = 0.3,
+    num_initial_gaussians: int = 2000,
+    tile_size: int = 16,
+    top_k: int = 10,
+) -> ImageGS:
+    height, width, _ = image.shape
+    gradient_map = image_gradient_map(image)
+    probability_mass = build_prob_map(gradient_map, l)
+    sampled_indices = mx.random.categorical(
+        probability_mass.reshape(-1), num_samples=num_initial_gaussians
+    )
+    rows = sampled_indices // width
+    cols = sampled_indices % width
+    means_norm = mx.stack(
+        [cols / mx.array(width), rows / mx.array(height)],
+        axis=-1,
+    )
+    colors = image[rows, cols, :]
+    return ImageGS(mean=means_norm, color=colors, tile_size=tile_size, k=top_k)
+
+
+__all__ = ["build_model"]

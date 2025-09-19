@@ -1,19 +1,19 @@
 from __future__ import annotations
+
+import math
 from pathlib import Path
 from uuid import uuid4
-import math
 
 import mlx.core as mx
 import mlx.nn as nn
 import mlx.optimizers as optim
+import numpy as np
 from mlx.utils import tree_flatten
+from tora import Tora
+from utils import decode_predictions, visualize_detections
 
 from networks.ssd.model import SSD300
 from networks.ssd.utils import generate_anchors, load_data, prepare_ssd_dataset
-from utils import decode_predictions, visualize_detections
-import numpy as np
-
-from tora import Tora
 
 DATASET_ROOT = Path("/Users/taigaishida/workspace/mlx-models/pedestrians/")
 

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import mlx.core as mx
 import cv2
+import mlx.core as mx
 import numpy as np
 
 
@@ -87,7 +87,9 @@ def decode_predictions(loc_preds, cls_preds, anchors, conf_thresh=0.5, nms_thres
             )
 
             union_area = current_area + remaining_areas - inter_area
-            iou = np.divide(inter_area, union_area, out=np.zeros_like(inter_area), where=union_area != 0)
+            iou = np.divide(
+                inter_area, union_area, out=np.zeros_like(inter_area), where=union_area != 0
+            )
 
             keep_mask = iou < nms_thresh
             sorted_indices = sorted_indices[1:][keep_mask]
@@ -95,7 +97,11 @@ def decode_predictions(loc_preds, cls_preds, anchors, conf_thresh=0.5, nms_thres
         final_detections = []
         for idx in keep_indices:
             final_detections.append(
-                {"bbox": detections_np[idx], "confidence": float(scores_np[idx]), "class_id": int(classes_np[idx])}
+                {
+                    "bbox": detections_np[idx],
+                    "confidence": float(scores_np[idx]),
+                    "class_id": int(classes_np[idx]),
+                }
             )
 
         batch_detections.append(final_detections)
@@ -133,7 +139,9 @@ def visualize_detections(image, detections, class_names=None, save_path=None):
 
         label_size = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)[0]
         cv2.rectangle(vis_image, (x1, y1 - label_size[1] - 10), (x1 + label_size[0], y1), color, -1)
-        cv2.putText(vis_image, label, (x1, y1 - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+        cv2.putText(
+            vis_image, label, (x1, y1 - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1
+        )
 
     if save_path:
         cv2.imwrite(save_path, cv2.cvtColor(vis_image, cv2.COLOR_RGB2BGR))
