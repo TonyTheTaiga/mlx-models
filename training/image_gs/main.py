@@ -14,6 +14,14 @@ from tora import Tora
 from networks.image_gs import build_model
 
 
+def srgb_to_linear(x: mx.array) -> mx.array:
+    x32 = x.astype(mx.float32)
+    a = mx.array(0.04045, dtype=mx.float32)
+    return mx.where(
+        x32 <= a, x32 / mx.array(12.92, dtype=mx.float32), ((x32 + 0.055) / 1.055) ** 2.4
+    )
+
+
 def build_probability_mass_from_error_map(error_map: mx.array) -> np.ndarray:
     error_numpy = np.array(error_map, dtype=np.float64)
     probabilities = np.nan_to_num(error_numpy, nan=0.0, posinf=0.0, neginf=0.0).reshape(-1)
@@ -55,31 +63,32 @@ def main(
     workspace_id: str | None = None,
     save: Path | None = None,
     budget: int = 0,
+    linear_error: bool = False,
+    no_duplicate_additions: bool = False,
+    top_k: int = 10,
 ):
     image_bgr = cv2.imread(image_path, flags=cv2.IMREAD_COLOR_RGB)
     if image_bgr is None:
         raise RuntimeError("failed to load image")
 
     target_image = mx.array(image_bgr).astype(mx.float32) / 255.0
-
     total_budget = int(budget)
-
     initial_gaussians = max(1, total_budget // 2)
-    model = build_model(target_image, num_initial_gaussians=initial_gaussians, tile_size=tile)
+
+    model = build_model(
+        target_image, num_initial_gaussians=initial_gaussians, tile_size=tile, top_k=top_k
+    )
     model.set_dtype(mx.float16)
     mx.eval(model.parameters())
-
     model(target_image)
 
-    height, width, _ = image_bgr.shape
     random_generator = np.random.default_rng(seed)
-
     loss_and_gradient_fn = nn.value_and_grad(model, l1_ssim_loss)
+
     lr_mu = 5e-4
     lr_c = 5e-3
     lr_s = 2e-3
     lr_theta = 2e-3
-
     adam_eps = 1e-4
     opt_mu = optim.Adam(learning_rate=lr_mu, eps=adam_eps)
     opt_c = optim.Adam(learning_rate=lr_c, eps=adam_eps)
@@ -88,16 +97,11 @@ def main(
     total_budget = max(total_budget, int(2 * model.num_gaussians))
 
     ramp_end = max(1, int(0.4 * epochs))
-    num_params = sum(v.size for _, v in tree_flatten(model.parameters()))  # pyright: ignore
-    trainable_params = sum(v.size for _, v in tree_flatten(model.trainable_parameters()))  # pyright: ignore
     exp_name = f"ImageGS_{uuid4().hex[:3]}"
-    tora_kwargs = {}
-
-    if workspace_id:
-        tora_kwargs["workspace_id"] = workspace_id
 
     tora = Tora.create_experiment(
         name=exp_name,
+        workspace_id=workspace_id,
         description="Image Gaussian Splatting: single-image reconstruction",
         hyperparams={
             "epochs": epochs,
@@ -109,18 +113,15 @@ def main(
             "initial_gaussians": initial_gaussians,
             "tile_size": tile,
             "sample_mix": sample_mix,
-            "num_params": num_params,
-            "num_trainable_params": trainable_params,
             "ramp_end_epochs": ramp_end,
         },
-        **tora_kwargs,
+        max_buffer_len=1,
     )
-    tora.max_buffer_len = 1
 
-    print(f"initial_gaussians={model.num_gaussians}")
-    tora.metric(name="num_gaussians", value=float(model.num_gaussians), step_or_epoch=0)
-
+    height, width, _ = image_bgr.shape
     for epoch in range(epochs):
+        tora.metric(name="num_gaussians", value=float(model.num_gaussians), step_or_epoch=epoch)
+
         try:
             mean32 = model.mean.astype(mx.float32)
             nan_mask = ~mx.isfinite(mean32)
@@ -215,23 +216,35 @@ def main(
         )
         tora.metric(name="train_loss", value=float(loss_value.item()), step_or_epoch=epoch)
         tora.metric(name="psnr", value=float(current_psnr), step_or_epoch=epoch)
-        tora.metric(name="num_gaussians", value=float(model.num_gaussians), step_or_epoch=epoch)
 
         if model.num_gaussians < total_budget:
-            error_map_mx = mx.sum(
-                mx.abs(rendered.astype(mx.float32) - target_image.astype(mx.float32)), axis=-1
-            )
+            if linear_error:
+                x_lin = srgb_to_linear(rendered)
+                y_lin = srgb_to_linear(target_image)
+                error_map_mx = mx.sum(mx.abs(x_lin - y_lin), axis=-1)
+            else:
+                error_map_mx = mx.sum(
+                    mx.abs(rendered.astype(mx.float32) - target_image.astype(mx.float32)), axis=-1
+                )
             add_probabilities = build_probability_mass_from_error_map(error_map_mx)
 
+            increments_done = min(((epoch + 1) // 500), 4)
             start = total_budget // 2
-            progress = min((epoch + 1) / float(ramp_end), 1.0)
-            target_count = int(min(total_budget, start + progress * (total_budget - start)))
+            per_increment = max(1, total_budget // 8)
+            target_count = int(min(total_budget, start + increments_done * per_increment))
             num_to_add = max(0, target_count - model.num_gaussians)
 
             if num_to_add > 0:
-                add_indices = random_generator.choice(
-                    height * width, size=num_to_add, replace=True, p=add_probabilities
-                )
+                population = height * width
+                if no_duplicate_additions and num_to_add <= population:
+                    add_indices = random_generator.choice(
+                        population, size=num_to_add, replace=False, p=add_probabilities
+                    )
+                else:
+                    add_indices = random_generator.choice(
+                        population, size=num_to_add, replace=True, p=add_probabilities
+                    )
+
                 add_rows = (add_indices // width).astype(np.int32)
                 add_cols = (add_indices % width).astype(np.int32)
                 new_means_mx = mx.stack(
@@ -245,6 +258,8 @@ def main(
                 new_colors_np = target_image_np[add_rows, add_cols, :]
                 new_colors_mx = mx.array(new_colors_np.astype(np.float32))
                 model.add_gaussians(new_means_mx, new_colors_mx)
+                mx.eval(model.parameters())
+
                 loss_and_gradient_fn = nn.value_and_grad(model, l1_ssim_loss)
                 lr_mu = 5e-4
                 lr_c = 5e-3
@@ -254,9 +269,6 @@ def main(
                 opt_c = optim.Adam(learning_rate=lr_c, eps=adam_eps)
                 opt_s = optim.Adam(learning_rate=lr_s, eps=adam_eps)
                 opt_theta = optim.Adam(learning_rate=lr_theta, eps=adam_eps)
-                tora.metric(
-                    name="num_gaussians", value=float(model.num_gaussians), step_or_epoch=epoch
-                )
 
         if save is not None:
             output_image = (mx.clip(rendered, 0.0, 1.0) * 255.0).astype(mx.uint8)
@@ -283,10 +295,27 @@ if __name__ == "__main__":
     parser.add_argument("--workspace_id", type=str, default=None)
     parser.add_argument("--save", type=Path, default=None)
     parser.add_argument(
+        "--linear_error",
+        action="store_true",
+        help="Compute densification error map in linear RGB instead of sRGB",
+    )
+    parser.add_argument(
+        "--no_duplicate_additions",
+        action="store_true",
+        help="Sample new Gaussians without replacement within each densification step",
+    )
+    parser.add_argument(
         "--budget",
         type=int,
         required=True,
         help="Total Gaussian budget Ng. Initial count = Ng/2.",
+    )
+    parser.add_argument(
+        "--top_k",
+        type=int,
+        required=False,
+        default=10,
+        help="Top K gaussians to use for each tile position",
     )
 
     args = parser.parse_args()
@@ -302,4 +331,7 @@ if __name__ == "__main__":
         workspace_id=args.workspace_id,
         save=args.save,
         budget=args.budget,
+        linear_error=args.linear_error,
+        no_duplicate_additions=args.no_duplicate_additions,
+        top_k=args.top_k,
     )
