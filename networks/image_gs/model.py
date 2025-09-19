@@ -85,10 +85,6 @@ class ImageGS(nn.Module):
             weights = weights * visible
             top_k = min(self._top_k, num_gaussians)
             weights32 = weights.astype(mx.float32)
-            perturb = (mx.arange(num_gaussians, dtype=mx.float32) / float(num_gaussians))[
-                :, None, None
-            ] * 1e-6
-            weights32 = weights32 + perturb
             top_values = mx.topk(weights32, k=top_k, axis=0)
             kth_value = mx.min(top_values, axis=0)
             topk_mask = (weights32 >= kth_value[None, :, :]).astype(weights.dtype)
