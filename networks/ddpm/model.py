@@ -48,10 +48,8 @@ class Block(nn.Module):
 
         self.identity = nn.Identity() if idim == odim else nn.Conv2d(idim, odim, 1)
         self.cn1 = nn.Conv2d(idim, odim, kernel_size=3, stride=1, padding=1)
-        # self.n1 = nn.RMSNorm(odim)
         self.n1 = nn.GroupNorm(8, odim)
         self.cn2 = nn.Conv2d(odim, odim, kernel_size=3, stride=1, padding=1)
-        # self.n2 = nn.RMSNorm(odim)
         self.n2 = nn.GroupNorm(8, odim)
         self.film = FiLM(embed_dim, odim)
 
