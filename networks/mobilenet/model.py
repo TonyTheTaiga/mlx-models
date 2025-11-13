@@ -17,6 +17,8 @@ class Block(nn.Module):
         nonlinearlity: Callable,
         se: bool,
     ):
+        super().__init__()
+
         # se = squeeze and excite
         assert stride == 1 or stride == 2, "only stride of 1 or 2 is supported"
 
@@ -142,7 +144,6 @@ class MobileNet(nn.Module):
                 in_channels=config[-1].channels,
                 out_channels=1280,
                 kernel_size=1,
-                bias=False,
             ),
             nn.BatchNorm(1280),
             nn.ReLU6(),
@@ -151,22 +152,19 @@ class MobileNet(nn.Module):
                 in_channels=1280,
                 out_channels=num_classes,
                 kernel_size=1,
-                bias=False,
             ),
         )
 
     def __call__(self, x: mx.array) -> mx.array:
         y = self.stem(x)
-        print(f"output of stem = {y.shape}")
         y = self.bottlenecks(y)
-        print(f"output of bottleneck layers = {y.shape}")
         y = self.output(y)
-        return mx.flatten(y)
+        return mx.squeeze(y)
 
 
 if __name__ == "__main__":
-    block = MobileNet(num_classes=1000, config=PAPER_CONFIG)
-    _input = mx.random.normal(shape=(1, 224, 224, 3))
+    block = MobileNet(num_classes=10, config=PAPER_CONFIG)
+    _input = mx.random.normal(shape=(4, 224, 224, 3))
     print(block(_input).shape)
     num_params = sum(v.size for _, v in tree_flatten(block.parameters()))
     print(f"num params = {num_params}")

@@ -112,8 +112,8 @@ def main():
             "num_trainable_params": trainable_params,
             "num_frozen_params": num_params - trainable_params,
         },
+        max_buffer_len=1,
     )
-    tora.max_buffer_len = 1
 
     for epoch in range(total_epochs):
         # current_lr = cosine_decay(initial_learning_rate, epoch, total_epochs, min_learning_rate)
@@ -135,10 +135,22 @@ def main():
 
             num_samples += images.shape[0]
 
-        tora.log("train_loss", step=epoch, value=(culm_loss / num_samples))
-        tora.log("train_cls_loss", step=epoch, value=(culm_cls_loss / num_samples))
-        tora.log("train_loc_loss", step=epoch, value=(culm_loc_loss / num_samples))
-        tora.log("lr", step=epoch, value=initial_learning_rate)
+        tora.metric(
+            name="train_loss",
+            step_or_epoch=epoch,
+            value=(culm_loss / num_samples),
+        )
+        tora.metric(
+            name="train_cls_loss",
+            step_or_epoch=epoch,
+            value=(culm_cls_loss / num_samples),
+        )
+        tora.metric(
+            name="train_loc_loss",
+            step_or_epoch=epoch,
+            value=(culm_loc_loss / num_samples),
+        )
+        tora.metric(name="lr", step_or_epoch=epoch, value=initial_learning_rate)
         print(f"train loss @{epoch} (lr={initial_learning_rate:.6f})", culm_loss / num_samples)
 
     image = mx.expand_dims(data[5]["resized_image"], 0)
@@ -159,6 +171,8 @@ def main():
         print(
             f"Saved visualization with {len(detections[0])} detections to detection_visualization.jpg"
         )
+
+    tora.shutdown()
 
 
 if __name__ == "__main__":

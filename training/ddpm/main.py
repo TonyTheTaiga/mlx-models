@@ -179,8 +179,8 @@ def main():
             "beta_max": BETA_MAX,
             "num_params": num_params,
         },
+        max_buffer_len=1,
     )
-    tora.max_buffer_len = 1
 
     optimizer = optim.AdamW(learning_rate=learning_rate)
     loss_and_grad_fn = nn.value_and_grad(unet, loss_fn)
@@ -201,10 +201,14 @@ def main():
             num_samples += x_clean.shape[0]
 
         epoch_loss = culm_loss / num_samples
-        tora.log(name="epoch_loss", value=float(epoch_loss), step=epoch)
+        tora.metric(name="epoch_loss", value=float(epoch_loss), step_or_epoch=epoch)
 
         epoch_eval_loss = eval_fn(unet, dataset["val"])
-        tora.log(name="epoch_eval_loss", value=float(epoch_eval_loss), step=epoch)
+        tora.metric(
+            name="epoch_eval_loss",
+            value=float(epoch_eval_loss),
+            step_or_epoch=epoch,
+        )
 
         if epoch == 0 or (epoch + 1) % 10 == 0:
             print(f"\nGenerating sample with step-by-step visualization (epoch {epoch + 1}):")
@@ -213,6 +217,8 @@ def main():
             samples = [sample_image(unet) for _ in range(3)]
             samples_mx = mx.concat(samples, axis=1)
             display(samples_mx)
+
+    tora.shutdown()
 
 
 if __name__ == "__main__":

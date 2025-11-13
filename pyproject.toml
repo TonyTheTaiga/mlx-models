@@ -16,7 +16,7 @@ dynamic = ["version"]
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["networks*"]
+include = ["networks*", "training*"]
 exclude = ["tests*", "tools*"]
 
 [tool.ruff]
