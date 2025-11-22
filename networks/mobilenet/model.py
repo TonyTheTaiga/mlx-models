@@ -94,10 +94,10 @@ class MobileNetConfig:
 PAPER_CONFIG = [
     MobileNetConfig(expansion_factor=1, channels=16, repeated=1, stride=1),
     MobileNetConfig(expansion_factor=6, channels=24, repeated=2, stride=2),
-    MobileNetConfig(expansion_factor=6, channels=32, repeated=3, stride=2),
+    MobileNetConfig(expansion_factor=6, channels=32, repeated=2, stride=2),
     MobileNetConfig(expansion_factor=6, channels=64, repeated=4, stride=2),
-    MobileNetConfig(expansion_factor=6, channels=96, repeated=3, stride=1),
-    MobileNetConfig(expansion_factor=6, channels=160, repeated=3, stride=2),
+    MobileNetConfig(expansion_factor=6, channels=96, repeated=2, stride=1),
+    MobileNetConfig(expansion_factor=6, channels=160, repeated=2, stride=2),
     MobileNetConfig(expansion_factor=6, channels=320, repeated=1, stride=1),
 ]
 
@@ -144,22 +144,20 @@ class MobileNet(nn.Module):
                 in_channels=config[-1].channels,
                 out_channels=1280,
                 kernel_size=1,
+                bias=False,
             ),
             nn.BatchNorm(1280),
             nn.ReLU6(),
-            nn.AvgPool2d(kernel_size=7),
-            nn.Conv2d(
-                in_channels=1280,
-                out_channels=num_classes,
-                kernel_size=1,
-            ),
         )
+        self.classifier = nn.Linear(1280, num_classes)
 
     def __call__(self, x: mx.array) -> mx.array:
         y = self.stem(x)
         y = self.bottlenecks(y)
         y = self.output(y)
-        return mx.squeeze(y)
+        y = mx.mean(y, (1, 2))
+        y = self.classifier(y)
+        return y
 
 
 if __name__ == "__main__":
