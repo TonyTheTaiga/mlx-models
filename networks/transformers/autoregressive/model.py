@@ -153,34 +153,39 @@ class Transformer(nn.Module):
                 f"Initial sequence length {x.shape[1]} exceeds maximum allowed length {self._seq_len}"
             )
 
+        if max_gen <= 0:
+            return
+
+        max_steps = min(max_gen, self._seq_len - x.shape[1])
+        if max_steps <= 0:
+            raise ValueError("Cannot generate any tokens because the sequence is already at max length")
+
         cache = []
         mask = MultiHeadAttn.generate_causal_mask(x.shape[1])
         mask = mask.astype(self.token_embedding.weight.dtype)
 
-        current_position = x.shape[1] - 1
         x = self.token_embedding(x) * math.sqrt(self._d_model)
         hidden_states = self.positional_encoding(x)
         for layer in self.layers:
             hidden_states, cache_layer = layer(hidden_states, mask=mask)
             cache.append(cache_layer)
 
-        logits = self.output_layer(self.ln1(hidden_states)[:, -1])
-        next_token = mx.random.categorical(logits * (1 / temperature))
-        yield next_token
-        current_position += 1
-
-        while current_position < max_gen:
-            next_token = next_token[:, None]
-            token_emb = self.token_embedding(next_token) * math.sqrt(self._d_model)
-            hidden_states = self.positional_encoding(token_emb, current_position=current_position)
-
-            for i, layer in enumerate(self.layers):
-                hidden_states, cache[i] = layer(hidden_states, kv_cache=cache[i])
-
+        current_position = x.shape[1]
+        for _ in range(max_steps):
             logits = self.output_layer(self.ln1(hidden_states)[:, -1])
             next_token = mx.random.categorical(logits * (1 / temperature))
             yield next_token
             current_position += 1
+
+            if current_position >= self._seq_len:
+                break
+
+            next_token = next_token[:, None]
+            token_emb = self.token_embedding(next_token) * math.sqrt(self._d_model)
+            hidden_states = self.positional_encoding(token_emb, current_position=current_position - 1)
+
+            for i, layer in enumerate(self.layers):
+                hidden_states, cache[i] = layer(hidden_states, kv_cache=cache[i])
 
 
 if __name__ == "__main__":
