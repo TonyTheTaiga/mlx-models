@@ -12,14 +12,15 @@ import base64
 import json
 import os
 import urllib.request
-from urllib.error import HTTPError
 import zipfile
 from pathlib import Path
+from urllib.error import HTTPError
 
 from tqdm import tqdm
 
-
-DATASET_URL = "https://www.kaggle.com/api/v1/datasets/download/nishantsingh96/refined-bookcorpus-dataset"
+DATASET_URL = (
+    "https://www.kaggle.com/api/v1/datasets/download/nishantsingh96/refined-bookcorpus-dataset"
+)
 DEFAULT_ARCHIVE_NAME = "bookcorpus-refined.zip"
 
 
@@ -50,9 +51,12 @@ def download(url: str, destination: Path, auth: tuple[str, str]) -> Path:
         req = urllib.request.Request(src_url, headers=headers)
         with urllib.request.urlopen(req) as response:
             total = int(response.headers.get("content-length", 0))
-            with open(destination, "wb") as fout, tqdm(
-                total=total, unit="B", unit_scale=True, desc=f"Downloading {destination.name}"
-            ) as pbar:
+            with (
+                open(destination, "wb") as fout,
+                tqdm(
+                    total=total, unit="B", unit_scale=True, desc=f"Downloading {destination.name}"
+                ) as pbar,
+            ):
                 while True:
                     chunk = response.read(1024 * 1024)
                     if not chunk:

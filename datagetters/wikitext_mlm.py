@@ -11,12 +11,11 @@ import csv
 import json
 import os
 import urllib.request
-from urllib.error import HTTPError
 import zipfile
 from pathlib import Path
+from urllib.error import HTTPError
 
 from tqdm import tqdm
-
 
 # Primary source: Kaggle dataset API.
 KAGGLE_URL = "https://www.kaggle.com/api/v1/datasets/download/vadimkurochkin/wikitext-103"
@@ -49,9 +48,12 @@ def download(url: str, destination: Path) -> Path:
         req = urllib.request.Request(src_url, headers=headers or {})
         with urllib.request.urlopen(req) as response:
             total = int(response.headers.get("content-length", 0))
-            with open(destination, "wb") as fout, tqdm(
-                total=total, unit="B", unit_scale=True, desc=f"Downloading {destination.name}"
-            ) as pbar:
+            with (
+                open(destination, "wb") as fout,
+                tqdm(
+                    total=total, unit="B", unit_scale=True, desc=f"Downloading {destination.name}"
+                ) as pbar,
+            ):
                 while True:
                     chunk = response.read(1024 * 1024)
                     if not chunk:

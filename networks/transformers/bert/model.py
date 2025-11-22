@@ -37,9 +37,7 @@ class Bert(nn.Module):
         super().__init__()
 
         self.embedder = nn.Embedding(vocab_size, d_model)
-        self.position_encoder = PositionalEncoding(
-            d_model=d_model, max_seq_len=max_seq_len
-        )
+        self.position_encoder = PositionalEncoding(d_model=d_model, max_seq_len=max_seq_len)
         self.layers = [Transformer(d_model, n_heads) for _ in range(n_layers)]
 
     def __call__(self, x: mx.array, mask: mx.array) -> mx.array:
@@ -71,9 +69,7 @@ if __name__ == "__main__":
 
     # Build an additive attention mask: 0 for valid tokens, -inf for padding.
     attention_mask = tokens != pad_id
-    attn_mask = (
-        attention_mask[:, None, :, None] * attention_mask[:, None, None, :]
-    )  # pyright: ignore
+    attn_mask = attention_mask[:, None, :, None] * attention_mask[:, None, None, :]  # pyright: ignore
     attn_mask = mx.where(attn_mask, 0.0, -1e9).astype(mx.float32)
 
     encoded = model(tokens, mask=attn_mask)
