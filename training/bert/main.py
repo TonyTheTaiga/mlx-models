@@ -69,21 +69,36 @@ def stream_batches(
     pad_id: int,
     batch_size: int,
     chunk_batches: int,
+    max_sequences: int | None = None,
 ):
     chunk_size = chunk_batches * batch_size
     sequences: list[list[int]] = []
     token_buffer: list[int] = []
+    total_yielded = 0
 
     def yield_batches(seq_list: list[list[int]]):
+        nonlocal total_yielded
         arr = np.array(seq_list, dtype=np.int32)
         idx = np.random.permutation(len(arr))
         arr = arr[idx]
         for start in range(0, len(arr), batch_size):
-            yield mx.array(arr[start : start + batch_size], dtype=mx.int32)
+            if max_sequences is not None and total_yielded >= max_sequences:
+                return
+            batch = arr[start : start + batch_size]
+
+            # Truncate batch if it exceeds max_sequences
+            if max_sequences is not None and total_yielded + len(batch) > max_sequences:
+                remaining = max_sequences - total_yielded
+                batch = batch[:remaining]
+
+            yield mx.array(batch, dtype=mx.int32)
+            total_yielded += len(batch)
 
     reader = pl.read_csv_batched(str(path), batch_size=10000)
 
     while True:
+        if max_sequences is not None and total_yielded >= max_sequences:
+            break
         try:
             batches = reader.next_batches(1)
             if not batches:
@@ -101,22 +116,32 @@ def stream_batches(
                     if len(sequences) >= chunk_size:
                         yield from yield_batches(sequences)
                         sequences = []
+                        if max_sequences is not None and total_yielded >= max_sequences:
+                            break
         except StopIteration:
             break
 
-    if token_buffer:
+    if token_buffer and (max_sequences is None or total_yielded < max_sequences):
         remainder = len(token_buffer) % seq_len
         if remainder:
             token_buffer.extend([pad_id] * (seq_len - remainder))
         for start in range(0, len(token_buffer), seq_len):
             sequences.append(token_buffer[start : start + seq_len])
 
-    if sequences:
+    if sequences and (max_sequences is None or total_yielded < max_sequences):
         yield from yield_batches(sequences)
 
 
-def count_total_sequences(path: Path, tokenizer, seq_len: int) -> int:
+def count_total_sequences(
+    path: Path, tokenizer, seq_len: int, max_sequences: int | None = None
+) -> int:
+    if max_sequences is not None:
+        # If we have a hard limit, we can just return that (or check if file is smaller, but that's slow)
+        # For speed, let's just return the limit. The training loop handles the case where data runs out early.
+        return max_sequences
+
     total_tokens = 0
+    # Use Polars to read CSV in batches to avoid OOM on large files
     reader = pl.read_csv_batched(str(path), batch_size=10000)
 
     while True:
@@ -150,9 +175,7 @@ def prepare_mlm_batch(
     base_vocab_size: int,
     mask_prob: float,
 ) -> tuple[mx.array, mx.array, mx.array]:
-    mask_selector = (mx.random.uniform(shape=batch.shape) < mask_prob) & (
-        batch != pad_id
-    )
+    mask_selector = (mx.random.uniform(shape=batch.shape) < mask_prob) & (batch != pad_id)
 
     rand_vals = mx.random.uniform(shape=batch.shape)
     mask_token_positions = mask_selector & (rand_vals < 0.8)
@@ -185,17 +208,13 @@ def masked_language_modeling_loss(
 
 
 def decode_tokens(tokenizer, token_ids: list[int], pad_id: int) -> str:
-    filtered = [
-        int(t) for t in token_ids if int(t) != pad_id and int(t) < tokenizer.n_vocab
-    ]
+    filtered = [int(t) for t in token_ids if int(t) != pad_id and int(t) < tokenizer.n_vocab]
     if not filtered:
         return ""
     return tokenizer.decode(filtered)
 
 
-def decode_tokens_with_mask(
-    tokenizer, token_ids: list[int], pad_id: int, mask_id: int
-) -> str:
+def decode_tokens_with_mask(tokenizer, token_ids: list[int], pad_id: int, mask_id: int) -> str:
     pieces: list[str] = []
     buffer: list[int] = []
     for token in token_ids:
@@ -271,9 +290,7 @@ def sample_generation(
 
     record = {
         "original": decode_tokens(tokenizer, original_tokens, pad_token_id),
-        "masked": decode_tokens_with_mask(
-            tokenizer, masked_tokens, pad_token_id, mask_token_id
-        ),
+        "masked": decode_tokens_with_mask(tokenizer, masked_tokens, pad_token_id, mask_token_id),
         "predicted": decode_tokens(tokenizer, filled_tokens, pad_token_id),
     }
 
@@ -295,6 +312,7 @@ def main():
     epochs = 50
     learning_rate = 1e-4
     mask_prob = 0.15
+    max_sequences: int | None = 1_000_000  # Set to None to stream the entire dataset
 
     model = BertForMLM(
         vocab_size=vocab_size,
@@ -317,6 +335,11 @@ def main():
     loss_and_grad_fn = nn.value_and_grad(model, loss_fn)
 
     num_params = sum(v.size for _, v in tree_flatten(model.parameters()))
+    total_sequences = count_total_sequences(
+        DATASET_PATH, tokenizer, seq_len, max_sequences=max_sequences
+    )
+    if max_sequences is None:
+        print(f"max_sequences=None, streaming all {total_sequences:,} sequences in the dataset.")
     tora = Tora.create_experiment(
         name=f"BERT_MLM_{uuid4().hex[:3]}",
         description=DESCRIPTION,
@@ -330,13 +353,13 @@ def main():
             "n_layers": n_layers,
             "mask_prob": mask_prob,
             "num_params": num_params,
+            "max_sequences": total_sequences,
         },
         workspace_id="da377350-b7dc-416d-a2fc-8c232396e476",
     )
     tora.max_buffer_len = 1
 
     chunk_batches = 64
-    total_sequences = count_total_sequences(DATASET_PATH, tokenizer, seq_len)
     batches_per_epoch = max(1, math.ceil(total_sequences / batch_size))
 
     generation_log_path = CHECKPOINT_DIR / f"bert_mlm_samples_{DATASET_NAME}.jsonl"
@@ -353,6 +376,7 @@ def main():
             pad_token_id,
             batch_size,
             chunk_batches,
+            max_sequences=total_sequences,
         )
 
         progress = tqdm(
