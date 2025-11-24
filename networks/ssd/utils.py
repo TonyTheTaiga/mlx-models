@@ -62,9 +62,10 @@ def prepare_ssd_dataset(
     image_batch, loc_targets_batch, cls_targets_batch = [], [], []
 
     N_priors = anchors.shape[0]
-    assert anchors.shape == (N_priors, 4), (
-        f"Expected anchors shape ({N_priors}, 4), but got {anchors.shape}"
-    )
+    assert anchors.shape == (
+        N_priors,
+        4,
+    ), f"Expected anchors shape ({N_priors}, 4), but got {anchors.shape}"
 
     # 1) Precompute anchor corners & area
     acx, acy, aw, ah = mx.split(anchors, 4, axis=1)
@@ -167,15 +168,21 @@ def prepare_ssd_dataset(
 
     # Assert final batch shapes
     _, C, H, W = final_images.shape
-    assert final_images.shape == (num_samples, C, H, W), (
-        f"Expected final_images shape ({num_samples}, {C}, {H}, {W}), but got {final_images.shape}"
-    )
-    assert final_locs.shape == (num_samples, N_priors, 4), (
-        f"Expected final_locs shape ({num_samples}, {N_priors}, 4), but got {final_locs.shape}"
-    )
-    assert final_clss.shape == (num_samples, N_priors), (
-        f"Expected final_clss shape ({num_samples}, {N_priors}), but got {final_clss.shape}"
-    )
+    assert final_images.shape == (
+        num_samples,
+        C,
+        H,
+        W,
+    ), f"Expected final_images shape ({num_samples}, {C}, {H}, {W}), but got {final_images.shape}"
+    assert final_locs.shape == (
+        num_samples,
+        N_priors,
+        4,
+    ), f"Expected final_locs shape ({num_samples}, {N_priors}, 4), but got {final_locs.shape}"
+    assert final_clss.shape == (
+        num_samples,
+        N_priors,
+    ), f"Expected final_clss shape ({num_samples}, {N_priors}), but got {final_clss.shape}"
 
     return final_images, final_locs, final_clss
 
