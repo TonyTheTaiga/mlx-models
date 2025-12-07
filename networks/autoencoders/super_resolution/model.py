@@ -25,19 +25,19 @@ class Encoder(nn.Module):
     def __init__(self, input_dim: int, output_dim: int, num_layers: int):
         super().__init__()
 
-        self.conv = nn.Conv2d(input_dim, output_dim, kernel_size=3, padding=1)
+        self.conv = nn.Conv2d(input_dim, output_dim, kernel_size=3, padding=1)  # stem
+
         layers = []
         for _ in range(num_layers):
             layers.append(ResidualEncoderBlock(output_dim, output_dim))
-        self.layers = layers
+
+        self.layers = nn.Sequential(*layers)
         self.conv_out = nn.Conv2d(output_dim, output_dim, kernel_size=3, padding=1)
 
     def __call__(self, x):
         x = self.conv(x)
         shortcut = x
-        for layer in self.layers:
-            x = layer(x)
-
+        x = self.layers(x)
         x = self.conv_out(x)
         return x + shortcut
 
@@ -47,6 +47,11 @@ class Decoder(nn.Module):
         super().__init__()
 
         num_upsamples = int(math.log2(scale_factor))
+        if 2**num_upsamples != scale_factor:
+            raise ValueError(
+                "scale_factor must be a power of two to align with pixel shuffle upsampling"
+            )
+
         layers = []
         for _ in range(num_upsamples):
             layers.extend(
@@ -55,8 +60,9 @@ class Decoder(nn.Module):
                     PixelShuffle(2),
                 ]
             )
-        self.final = nn.Conv2d(input_dim, output_dim, kernel_size=3, padding=1)
+
         self.layers = nn.Sequential(*layers)
+        self.final = nn.Conv2d(input_dim, output_dim, kernel_size=3, padding=1)
 
     def __call__(self, x):
         x = self.layers(x)
@@ -104,13 +110,7 @@ class SuperResolution(nn.Module):
 
 if __name__ == "__main__":
     import mlx.core as mx
-    from mlx.utils import tree_flatten
 
     model = SuperResolution(upscale=4)
     _input = mx.zeros(shape=(1, 256, 160, 3))
     output = model(_input)
-    for k, v in tree_flatten(model.parameters()):
-        print(k, v.shape)
-
-#     _input = mx.zeros(shape=(1, 256, 160, 3 * (2**2)))
-#     print(pixel_shuffle(_input, 2).shape)
