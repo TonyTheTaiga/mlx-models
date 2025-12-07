@@ -1,0 +1,27 @@
+{
+  "artifacts": {
+    "actor": "actor_latest.npz",
+    "critic": "critic_latest.npz"
+  },
+  "env": {
+    "m": 2.0,
+    "l": 1.0,
+    "g": 9.8100004196167,
+    "dt": 0.019999999552965164,
+    "max_torque": 1.0,
+    "theta_threshold": 1.5707963705062866,
+    "max_theta_dot": 10.0,
+    "init_theta_range": 3.1415927410125732,
+    "init_theta_dot_range": 1.0
+  },
+  "training": {
+    "num_iterations": 100,
+    "num_steps": 2048,
+    "num_epochs": 10,
+    "batch_size": 64,
+    "gamma": 0.99,
+    "gae_lambda": 0.95,
+    "clip_eps": 0.2,
+    "entropy_coef": 0.01
+  }
+}

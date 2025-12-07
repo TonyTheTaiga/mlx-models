@@ -12,6 +12,8 @@ class Env:
         max_torque: float = 2.0,
         theta_threshold: float = mx.pi / 2,
         max_theta_dot: float = 10.0,
+        init_theta_range: float = mx.pi,
+        init_theta_dot_range: float = 1.0,
     ) -> None:
         self.m = mx.array(m)
         self.l = mx.array(l)
@@ -21,6 +23,8 @@ class Env:
         self.max_torque = mx.array(max_torque)
         self.theta_threshold = mx.array(theta_threshold)
         self.max_theta_dot = mx.array(max_theta_dot)
+        self.init_theta_range = mx.array(init_theta_range)
+        self.init_theta_dot_range = mx.array(init_theta_dot_range)
         self.state: mx.array | None = None
 
     def observe(self) -> mx.array:
@@ -28,14 +32,15 @@ class Env:
             raise RuntimeError("call reset to set initial state")
 
         theta, theta_dot = self.state
-        return mx.array([mx.sin(theta), mx.cos(theta), theta_dot])
+        obs = mx.stack([mx.sin(theta), mx.cos(theta), theta_dot], axis=0)
+        return mx.reshape(obs, (-1,))
 
     def reset(self, seed=None):
         if seed is not None:
             mx.random.seed(seed)
 
-        theta = mx.random.uniform(-0.05, 0.05)
-        theta_dot = mx.random.uniform(-0.05, 0.05)
+        theta = mx.random.uniform(-self.init_theta_range, self.init_theta_range)
+        theta_dot = mx.random.uniform(-self.init_theta_dot_range, self.init_theta_dot_range)
         self.state = mx.array([theta, theta_dot])
         return self.observe()
 
@@ -53,7 +58,18 @@ class Env:
         observation = self.observe()
         reward = self.compute_reward(theta, theta_dot, u)
         done = abs(theta) > self.theta_threshold
-        return observation, reward, done, {"theta": theta, "theta_dot": theta_dot, "action": u}
+        return (
+            observation,
+            reward,
+            done,
+            {
+                "theta": theta,
+                "theta_dot": theta_dot,
+                "theta_dotdot": theta_dotdot,
+                "action": u,
+                "reward": reward,
+            },
+        )
 
     def compute_reward(self, theta, theta_dot, u):
         k_theta = 1.0
