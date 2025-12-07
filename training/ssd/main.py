@@ -2,12 +2,15 @@ from __future__ import annotations
 
 import math
 from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
 from uuid import uuid4
 
 import mlx.core as mx
 import mlx.nn as nn
 import mlx.optimizers as optim
 import numpy as np
+import yaml
 from mlx.utils import tree_flatten
 from tora import Tora
 from utils import decode_predictions, visualize_detections
@@ -15,7 +18,61 @@ from utils import decode_predictions, visualize_detections
 from networks.ssd.model import SSD300
 from networks.ssd.utils import generate_anchors, load_data, prepare_ssd_dataset
 
-DATASET_ROOT = Path("/Users/taigaishida/workspace/mlx-models/pedestrians/")
+CONFIG_PATH = Path(__file__).with_name("config.yaml")
+
+
+def load_yaml_config(path: Path) -> dict[str, Any]:
+    with path.expanduser().open("r", encoding="utf-8") as f:
+        data = yaml.safe_load(f) or {}
+    return data
+
+
+def resolve_path(value: str | None, base: Path) -> Path | None:
+    if value is None:
+        return None
+    path = Path(value).expanduser()
+    if not path.is_absolute():
+        path = (base / path).resolve()
+    return path
+
+
+def build_config(config_path: Path = CONFIG_PATH) -> SimpleNamespace:
+    cfg = load_yaml_config(config_path)
+    base = config_path.parent
+    dataset_root = resolve_path(cfg.get("dataset_root"), base) or Path(
+        "/Users/taigaishida/workspace/mlx-models/pedestrians/"
+    )
+
+    def to_float_list(values, default):
+        seq = values if values is not None else default
+        return [float(v) for v in seq]
+
+    def to_int_list(values, default):
+        seq = values if values is not None else default
+        return [int(v) for v in seq]
+
+    return SimpleNamespace(
+        dataset_root=dataset_root,
+        input_size=int(cfg.get("input_size", 300)),
+        batch_size=int(cfg.get("batch_size", 16)),
+        initial_lr=float(cfg.get("initial_learning_rate", 2e-2)),
+        total_epochs=int(cfg.get("total_epochs", 250)),
+        optimizer=cfg.get("optimizer", "SGD"),
+        freeze_backbone=bool(cfg.get("freeze_backbone", True)),
+        load_pretrained_weights=bool(cfg.get("load_pretrained_weights", False)),
+        pretrained_weights=resolve_path(cfg.get("pretrained_weights_path"), base),
+        anchor_aspect_ratios=to_float_list(
+            cfg.get("anchor_aspect_ratios"), [1.0, 2.0, 3.0, 0.5, 1 / 3]
+        ),
+        feature_map_sizes=to_int_list(cfg.get("feature_map_sizes"), [37, 18, 9, 5, 3, 1]),
+        conf_threshold=float(cfg.get("confidence_threshold", 0.9)),
+        nms_threshold=float(cfg.get("nms_threshold", 0.15)),
+        description=cfg.get(
+            "description", "SSD300, VGG16 backbone, pretrained weights obtained via torchvision"
+        ),
+        visualization_path=resolve_path(cfg.get("visualization_path"), base)
+        or (base / "detection_visualization.jpg"),
+    )
 
 
 def dataloader(data, batch_size):
@@ -60,24 +117,28 @@ def cosine_decay(initial_lr, epoch, total_epochs, min_lr=0.0):
     return min_lr + (initial_lr - min_lr) * 0.5 * (1 + math.cos(math.pi * epoch / total_epochs))
 
 
-def main():
-    initial_learning_rate = 2e-2
-    total_epochs = 250
-    freeze_backbone = True
-    load_pretrained_weights = False
-    optim_type = "SGD"
-    batch_size = 16
+def main(cfg: SimpleNamespace | None = None):
+    cfg = cfg or build_config()
+    cfg.visualization_path.parent.mkdir(parents=True, exist_ok=True)
 
-    data = load_data(DATASET_ROOT, 300)
-    anchors = generate_anchors([1, 2, 3, 1 / 2, 1 / 3], feature_map_sizes=[37, 18, 9, 5, 3, 1])
+    initial_learning_rate = cfg.initial_lr
+    total_epochs = cfg.total_epochs
+    freeze_backbone = cfg.freeze_backbone
+    load_pretrained_weights = cfg.load_pretrained_weights
+    optim_type = cfg.optimizer
+    batch_size = cfg.batch_size
+
+    data = load_data(cfg.dataset_root, cfg.input_size)
+    anchors = generate_anchors(cfg.anchor_aspect_ratios, feature_map_sizes=cfg.feature_map_sizes)
     dataset = prepare_ssd_dataset(data, anchors)
     model = SSD300(num_classes=2)  # pedestrian + background
 
     if load_pretrained_weights:
-        model.load_weights(
-            "/Users/taigaishida/workspace/mlx-models/networks/vgg16/weights.npz",
-            strict=False,
-        )
+        if cfg.pretrained_weights is None:
+            raise ValueError(
+                "pretrained weights path must be provided when load_pretrained_weights is True"
+            )
+        model.load_weights(str(cfg.pretrained_weights), strict=False)
 
     if freeze_backbone:
         if not load_pretrained_weights:
@@ -101,7 +162,7 @@ def main():
 
     tora = Tora.create_experiment(
         name=f"SSD_{uuid4().hex[:3]}",
-        description="SSD300, VGG16 backbone, pretrained weights obtained via torchvision",
+        description=cfg.description,
         hyperparams={
             "architecture": "SSD300",
             "batch_size": batch_size,
@@ -144,7 +205,9 @@ def main():
     image = mx.expand_dims(data[5]["resized_image"], 0)
     pred_loc, pred_cls = model(image)
 
-    detections = decode_predictions(pred_loc, pred_cls, anchors, 0.9, 0.15)
+    detections = decode_predictions(
+        pred_loc, pred_cls, anchors, cfg.conf_threshold, cfg.nms_threshold
+    )
     if detections[0]:
         original_image = np.array(data[5]["image"])
         if original_image.max() <= 1.0:
@@ -154,10 +217,10 @@ def main():
             original_image,
             detections[0],
             class_names=["background", "pedestrian"],
-            save_path="detection_visualization.jpg",
+            save_path=str(cfg.visualization_path),
         )
         print(
-            f"Saved visualization with {len(detections[0])} detections to detection_visualization.jpg"
+            f"Saved visualization with {len(detections[0])} detections to {cfg.visualization_path}"
         )
 
 

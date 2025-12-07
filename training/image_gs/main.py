@@ -1,5 +1,6 @@
 import math
 from pathlib import Path
+from typing import Any
 from uuid import uuid4
 
 import cv2
@@ -7,11 +8,14 @@ import mlx.core as mx
 import mlx.nn as nn
 import mlx.optimizers as optim
 import numpy as np
+import yaml
 from loss import l1_ssim_loss
 from mlx.utils import tree_flatten
 from tora import Tora
 
 from networks.image_gs import build_model
+
+CONFIG_PATH = Path(__file__).with_name("config.yaml")
 
 
 def srgb_to_linear(x: mx.array) -> mx.array:
@@ -52,6 +56,21 @@ def compute_psnr(x: mx.array, y: mx.array, max_val: float = 1.0) -> float:
     if not math.isfinite(mse) or mse <= 1e-12:
         return 99.0
     return float(20.0 * math.log10(max_val) - 10.0 * math.log10(mse))
+
+
+def load_yaml_config(path: Path) -> dict[str, Any]:
+    with path.expanduser().open("r", encoding="utf-8") as f:
+        data = yaml.safe_load(f) or {}
+    return data
+
+
+def resolve_path(value: str | None, base: Path) -> Path | None:
+    if value is None:
+        return None
+    path = Path(value).expanduser()
+    if not path.is_absolute():
+        path = (base / path).resolve()
+    return path
 
 
 def main(
@@ -279,59 +298,26 @@ def main(
 
 
 if __name__ == "__main__":
-    import argparse
+    config = load_yaml_config(CONFIG_PATH)
+    base = CONFIG_PATH.parent
+    image_path = resolve_path(config.get("image"), base)
+    if image_path is None:
+        raise ValueError("`image` must be set in the config file")
+    if not image_path.exists():
+        raise FileNotFoundError(f"image not found: {image_path}")
 
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--image", required=True, type=Path)
-    parser.add_argument("--epochs", type=int, default=2)
-    parser.add_argument("--tile", type=int, default=16)
-    parser.add_argument(
-        "--sample_mix",
-        type=float,
-        default=0.3,
-        help="Mixture weight for gradient-guided vs uniform sampling (0..1)",
-    )
-    parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--workspace_id", type=str, default=None)
-    parser.add_argument("--save", type=Path, default=None)
-    parser.add_argument(
-        "--linear_error",
-        action="store_true",
-        help="Compute densification error map in linear RGB instead of sRGB",
-    )
-    parser.add_argument(
-        "--no_duplicate_additions",
-        action="store_true",
-        help="Sample new Gaussians without replacement within each densification step",
-    )
-    parser.add_argument(
-        "--budget",
-        type=int,
-        required=True,
-        help="Total Gaussian budget Ng. Initial count = Ng/2.",
-    )
-    parser.add_argument(
-        "--top_k",
-        type=int,
-        required=False,
-        default=10,
-        help="Top K gaussians to use for each tile position",
-    )
-
-    args = parser.parse_args()
-    if not args.image.exists():
-        raise FileNotFoundError("image not found!")
+    save_path = resolve_path(config.get("save"), base)
 
     main(
-        image_path=args.image.as_posix(),
-        epochs=args.epochs,
-        tile=args.tile,
-        sample_mix=args.sample_mix,
-        seed=args.seed,
-        workspace_id=args.workspace_id,
-        save=args.save,
-        budget=args.budget,
-        linear_error=args.linear_error,
-        no_duplicate_additions=args.no_duplicate_additions,
-        top_k=args.top_k,
+        image_path=image_path.as_posix(),
+        epochs=int(config.get("epochs", 2)),
+        tile=int(config.get("tile", 16)),
+        sample_mix=float(config.get("sample_mix", 0.3)),
+        seed=config.get("seed"),
+        workspace_id=config.get("workspace_id"),
+        save=save_path,
+        budget=int(config.get("budget", 0)),
+        linear_error=bool(config.get("linear_error", False)),
+        no_duplicate_additions=bool(config.get("no_duplicate_additions", False)),
+        top_k=int(config.get("top_k", 10)),
     )

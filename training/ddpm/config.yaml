@@ -1,0 +1,11 @@
+dataset_root: ../../mnist
+workspace_id: 5f0ae752-9d6d-4c67-b0ba-2fd601a83831
+description: "t_dim = 64"
+epochs: 100
+batch_size: 8
+learning_rate: 0.0001
+t_steps: 500
+t_dim: 64
+input_channels: 1
+beta_min: 0.0001
+beta_max: 0.02

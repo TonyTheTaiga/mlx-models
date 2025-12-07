@@ -1,0 +1,15 @@
+dataset_root: ../../pedestrians
+input_size: 300
+batch_size: 16
+total_epochs: 250
+initial_learning_rate: 0.02
+optimizer: SGD
+freeze_backbone: true
+load_pretrained_weights: false
+pretrained_weights_path: ../../networks/vgg16/weights.npz
+anchor_aspect_ratios: [1.0, 2.0, 3.0, 0.5, 0.3333333333]
+feature_map_sizes: [37, 18, 9, 5, 3, 1]
+confidence_threshold: 0.9
+nms_threshold: 0.15
+description: "SSD300, VGG16 backbone, pretrained weights obtained via torchvision"
+visualization_path: detection_visualization.jpg

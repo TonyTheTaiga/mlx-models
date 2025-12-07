@@ -12,12 +12,14 @@ keywords = ["mlx"]
 license = { text = "BSD-3-Clause" }
 classifiers = ["Programming Language :: Python :: 3"]
 dependencies = [
-    "mlx",
- "opencv-python",
- 'tora',
- 'tqdm',
- "tiktoken",
- "polars>=1.35.2",
+  "mlx",
+  "opencv-python",
+  'tora',
+  'tqdm',
+  "tiktoken",
+  "polars>=1.35.2",
+  "opencv-python-headless",
+  "pyyaml",
 ]
 dynamic = ["version"]
 
