@@ -1,0 +1,108 @@
+import mlx.core as mx
+import mlx.nn as nn
+
+from networks.speech_autoencoder.cnext import ConvNeXtBlock, CausalConvNeXtBlock
+
+
+class Encoder(nn.Module):
+    def __init__(self, in_channels: int) -> None:
+        super().__init__()
+
+        self.conv1 = nn.Conv1d(in_channels=in_channels, out_channels=512, kernel_size=7, padding=3)
+        self.bn1 = nn.BatchNorm(num_features=512)
+        self.convnext_blocks = nn.Sequential(
+            *[ConvNeXtBlock(dim=512, expansion=4) for _ in range(10)]
+        )
+        self.project = nn.Linear(input_dims=512, output_dims=24)
+        self.ln1 = nn.LayerNorm(dims=24)
+
+    def __call__(self, x: mx.array) -> mx.array:
+        x = self.conv1(x)
+        x = self.bn1(x)
+        x = self.convnext_blocks(x)
+        x = self.project(x)
+        x = self.ln1(x)
+
+        return x
+
+
+class CausalConv1d(nn.Module):
+    def __init__(
+        self,
+        in_channels: int,
+        out_channels: int,
+        kernel_size: int,
+        stride: int = 1,
+        dilation: int = 1,
+        groups: int = 1,
+        bias: bool = True,
+    ):
+        super().__init__()
+        self.kernel_size = kernel_size
+        self.left_pad = (kernel_size - 1) * dilation
+        self.conv = nn.Conv1d(
+            in_channels=in_channels,
+            out_channels=out_channels,
+            kernel_size=kernel_size,
+            stride=stride,
+            padding=0,
+            dilation=dilation,
+            groups=groups,
+            bias=bias,
+        )
+
+    def __call__(self, x: mx.array) -> mx.array:
+        pad_width = [(0, 0), (self.left_pad, 0), (0, 0)]
+        x = mx.pad(x, pad_width=pad_width, constant_values=0)
+        return self.conv(x)
+
+
+class Decoder(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.conv1 = CausalConv1d(in_channels=24, out_channels=512, kernel_size=7)
+        self.bn1 = nn.BatchNorm(512)
+        self.convnext_blocks = nn.Sequential(
+            *[
+                CausalConvNeXtBlock(dim=512, expansion=4, kernel_size=7, dilation=dilation)
+                for dilation in [1, 2, 4, 1, 2, 4, 1, 1, 1, 1]
+            ]
+        )
+        self.bn2 = nn.BatchNorm(512)
+        self.conv2 = CausalConv1d(in_channels=512, out_channels=2048, kernel_size=3)
+        self.act = nn.PReLU()
+        self.linear = nn.Linear(input_dims=2048, output_dims=512)
+
+    def __call__(self, x: mx.array) -> mx.array:
+        x = self.conv1(x)
+        x = self.bn1(x)
+        x = self.convnext_blocks(x)
+        x = self.bn2(x)
+        x = self.conv2(x)
+        x = self.act(x)
+        x = self.linear(x)
+        bsz, seq_len, feat = x.shape
+        waveform = mx.reshape(x, (bsz, seq_len * feat, 1))
+        return waveform
+
+
+if __name__ == "__main__":
+    batch_size = 2
+    sequence_length = 400  # mock number of frames
+    mel_bins = 228  # mock mel-dim as described in the paper
+
+    encoder = Encoder(in_channels=mel_bins)
+    decoder = Decoder()
+
+    mock_mel = mx.random.uniform(
+        low=0.0,
+        high=1.0,
+        shape=(batch_size, sequence_length, mel_bins),
+    )
+    print(f"Mock mel input shape: {mock_mel.shape}")
+
+    encoded = encoder(mock_mel)
+    print(f"Encoder output shape: {encoded.shape}")
+
+    decoded = decoder(encoded)
+    print(f"Decoder output shape: {decoded.shape}")
