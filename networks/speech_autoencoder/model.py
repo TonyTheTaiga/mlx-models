@@ -1,20 +1,20 @@
 import mlx.core as mx
 import mlx.nn as nn
 
-from networks.speech_autoencoder.cnext import ConvNeXtBlock, CausalConvNeXtBlock
+from networks.speech_autoencoder.cnext import CausalConvNeXtBlock, ConvNeXtBlock
 
 
 class Encoder(nn.Module):
-    def __init__(self, in_channels: int) -> None:
+    def __init__(self, in_dims: int, out_dims: int) -> None:
         super().__init__()
 
-        self.conv1 = nn.Conv1d(in_channels=in_channels, out_channels=512, kernel_size=7, padding=3)
+        self.conv1 = nn.Conv1d(in_channels=in_dims, out_channels=512, kernel_size=7, padding=3)
         self.bn1 = nn.BatchNorm(num_features=512)
         self.convnext_blocks = nn.Sequential(
             *[ConvNeXtBlock(dim=512, expansion=4) for _ in range(10)]
         )
-        self.project = nn.Linear(input_dims=512, output_dims=24)
-        self.ln1 = nn.LayerNorm(dims=24)
+        self.project = nn.Linear(input_dims=512, output_dims=out_dims)
+        self.ln1 = nn.LayerNorm(dims=out_dims)
 
     def __call__(self, x: mx.array) -> mx.array:
         x = self.conv1(x)
@@ -58,9 +58,9 @@ class CausalConv1d(nn.Module):
 
 
 class Decoder(nn.Module):
-    def __init__(self):
+    def __init__(self, in_dims: int, out_dims: int):
         super().__init__()
-        self.conv1 = CausalConv1d(in_channels=24, out_channels=512, kernel_size=7)
+        self.conv1 = CausalConv1d(in_channels=in_dims, out_channels=512, kernel_size=7)
         self.bn1 = nn.BatchNorm(512)
         self.convnext_blocks = nn.Sequential(
             *[
@@ -71,7 +71,7 @@ class Decoder(nn.Module):
         self.bn2 = nn.BatchNorm(512)
         self.conv2 = CausalConv1d(in_channels=512, out_channels=2048, kernel_size=3)
         self.act = nn.PReLU()
-        self.linear = nn.Linear(input_dims=2048, output_dims=512)
+        self.linear = nn.Linear(input_dims=2048, output_dims=out_dims)
 
     def __call__(self, x: mx.array) -> mx.array:
         x = self.conv1(x)
@@ -89,8 +89,8 @@ class Decoder(nn.Module):
 class SpeechAutoEncoder(nn.Module):
     def __init__(self, in_dims: int):
         super().__init__()
-        self.encoder = Encoder(in_channels=in_dims)
-        self.decoder = Decoder()
+        self.encoder = Encoder(in_dims=in_dims, out_dims=24)
+        self.decoder = Decoder(in_dims=24, out_dims=512)
 
     def __call__(self, x: mx.array):
         x = self.encoder(x)
