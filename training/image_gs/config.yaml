@@ -1,0 +1,11 @@
+image: /path/to/target.png
+epochs: 2
+tile: 16
+sample_mix: 0.3
+seed: 42
+workspace_id: null
+save: null
+budget: 50000
+linear_error: false
+no_duplicate_additions: false
+top_k: 10

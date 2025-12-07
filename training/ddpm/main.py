@@ -1,4 +1,6 @@
 from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
 from uuid import uuid4
 
 import cv2
@@ -6,29 +8,76 @@ import mlx.core as mx
 import mlx.nn as nn
 import mlx.optimizers as optim
 import numpy as np
+import yaml
 from mlx.utils import tree_flatten
 from tora import Tora  # pyright: ignore
 
 from networks.ddpm.model import UNET
 
-WORKSPACE_ID = "5f0ae752-9d6d-4c67-b0ba-2fd601a83831"
-MNIST_PATH = Path("/Users/taigaishida/workspace/mlx-models/mnist/")
-T = 500
-DESCRIPTION = "t_dim = 64"
-BETA_MIN = 1e-4
-BETA_MAX = 2e-2
-BETA = mx.linspace(BETA_MIN, BETA_MAX, T)
-ALPHA = 1 - BETA
-ALPHABAR = mx.cumprod(ALPHA, axis=0)
-ALPHABAR_SQRT = mx.sqrt(ALPHABAR)
-ALPHABAR_SQRT_OM = mx.sqrt(1 - ALPHABAR)
+CONFIG_PATH = Path(__file__).with_name("config.yaml")
 
-ALPHABAR_PREV = mx.roll(ALPHABAR, 1)
-ALPHABAR_PREV[0] = 1.0
-POST_VAR = BETA * (1 - ALPHABAR_PREV) / (1 - ALPHABAR)
-POST_VAR[0] = 0.0
-C1 = (mx.sqrt(ALPHABAR_PREV) * BETA) / (1 - ALPHABAR)
-C2 = (mx.sqrt(ALPHA) * (1 - ALPHABAR_PREV)) / (1 - ALPHABAR)
+
+def load_yaml_config(path: Path) -> dict[str, Any]:
+    with path.expanduser().open("r", encoding="utf-8") as f:
+        data = yaml.safe_load(f) or {}
+    return data
+
+
+def resolve_path(value: str | None, base: Path) -> Path | None:
+    if value is None:
+        return None
+    path = Path(value).expanduser()
+    if not path.is_absolute():
+        path = (base / path).resolve()
+    return path
+
+
+def build_config(config_path: Path = CONFIG_PATH) -> SimpleNamespace:
+    cfg = load_yaml_config(config_path)
+    base = config_path.parent
+    mnist_path = resolve_path(cfg.get("dataset_root"), base) or Path(
+        "/Users/taigaishida/workspace/mlx-models/mnist/"
+    )
+    return SimpleNamespace(
+        mnist_path=mnist_path,
+        workspace_id=cfg.get("workspace_id", "5f0ae752-9d6d-4c67-b0ba-2fd601a83831"),
+        description=cfg.get("description", "t_dim = 64"),
+        epochs=int(cfg.get("epochs", 100)),
+        batch_size=int(cfg.get("batch_size", 8)),
+        learning_rate=float(cfg.get("learning_rate", 1e-4)),
+        t_steps=int(cfg.get("t_steps", 500)),
+        t_dim=int(cfg.get("t_dim", 64)),
+        input_channels=int(cfg.get("input_channels", 1)),
+        beta_min=float(cfg.get("beta_min", 1e-4)),
+        beta_max=float(cfg.get("beta_max", 2e-2)),
+    )
+
+
+def build_diffusion_tables(cfg: SimpleNamespace) -> SimpleNamespace:
+    beta = mx.linspace(cfg.beta_min, cfg.beta_max, cfg.t_steps)
+    alpha = 1 - beta
+    alphabar = mx.cumprod(alpha, axis=0)
+    alphabar_sqrt = mx.sqrt(alphabar)
+    alphabar_sqrt_om = mx.sqrt(1 - alphabar)
+
+    alphabar_prev = mx.roll(alphabar, 1)
+    alphabar_prev[0] = 1.0
+    post_var = beta * (1 - alphabar_prev) / (1 - alphabar)
+    post_var[0] = 0.0
+    c1 = (mx.sqrt(alphabar_prev) * beta) / (1 - alphabar)
+    c2 = (mx.sqrt(alpha) * (1 - alphabar_prev)) / (1 - alphabar)
+
+    return SimpleNamespace(
+        beta=beta,
+        alpha=alpha,
+        alphabar=alphabar,
+        alphabar_sqrt=alphabar_sqrt,
+        alphabar_sqrt_om=alphabar_sqrt_om,
+        alphabar_prev=alphabar_prev,
+        post_var=post_var,
+        c1=c1,
+        c2=c2,
+    )
 
 
 def load_a_image(path: str | Path, read_flag=cv2.IMREAD_COLOR_BGR):
@@ -40,10 +89,10 @@ def load_a_image(path: str | Path, read_flag=cv2.IMREAD_COLOR_BGR):
     return np_img
 
 
-def load_mnist() -> dict[str, mx.array]:
+def load_mnist(cfg: SimpleNamespace) -> dict[str, mx.array]:
     train = []
     train_labels = []
-    for p in (MNIST_PATH / "training").rglob("**/*.png"):
+    for p in (cfg.mnist_path / "training").rglob("**/*.png"):
         train_labels.append(int(p.parent.name))
         train.append(load_a_image(p, cv2.IMREAD_GRAYSCALE))
 
@@ -52,7 +101,7 @@ def load_mnist() -> dict[str, mx.array]:
 
     val = []
     val_labels = []
-    for p in (MNIST_PATH / "testing").rglob("**/*.png"):
+    for p in (cfg.mnist_path / "testing").rglob("**/*.png"):
         val_labels.append(int(p.parent.name))
         val.append(load_a_image(p, cv2.IMREAD_GRAYSCALE))
 
@@ -102,12 +151,14 @@ def loss_fn(model: UNET, noisey_image: mx.array, eps: mx.array, t: mx.array):
 def eval_fn(
     model: UNET,
     dataset,
+    cfg: SimpleNamespace,
+    diff: SimpleNamespace,
 ):
     culm_loss = 0.0
     nsamples = 0
-    for x_clean in dataloader(dataset, batch_size=64):
-        t = mx.random.randint(0, T, (x_clean.shape[0],), dtype=mx.int32)
-        noisy, eps = add_noise(x_clean, t)
+    for x_clean in dataloader(dataset, batch_size=cfg.batch_size):
+        t = mx.random.randint(0, cfg.t_steps, (x_clean.shape[0],), dtype=mx.int32)
+        noisy, eps = add_noise(x_clean, t, diff)
         loss = mx.mean((model(noisy, t) - eps) ** 2).item()
         culm_loss += loss * x_clean.shape[0]  # pyright: ignore
         nsamples += x_clean.shape[0]
@@ -121,30 +172,35 @@ def dataloader(data, batch_size):
         yield data[idx[start : start + batch_size]]
 
 
-def add_noise(x: mx.array, t: mx.array):
+def add_noise(x: mx.array, t: mx.array, diff: SimpleNamespace):
     eps = mx.random.normal(shape=x.shape, dtype=mx.float32)
-    sqrt_ab = ALPHABAR_SQRT[t][:, None, None, None]
-    sqrt_one = ALPHABAR_SQRT_OM[t][:, None, None, None]
+    sqrt_ab = diff.alphabar_sqrt[t][:, None, None, None]
+    sqrt_one = diff.alphabar_sqrt_om[t][:, None, None, None]
     x_t = sqrt_ab * x + sqrt_one * eps
     return x_t, eps
 
 
-def sample_image(model: UNET, show_progress=False):
-    x = mx.random.normal(shape=(1, 28, 28, 1), dtype=mx.float32)
+def sample_image(
+    model: UNET,
+    cfg: SimpleNamespace,
+    diff: SimpleNamespace,
+    show_progress=False,
+):
+    x = mx.random.normal(shape=(1, 28, 28, cfg.input_channels), dtype=mx.float32)
 
     if show_progress:
         print("Starting denoising process...")
         display((x + 1) / 2)
-        print(f"Step: {T} (pure noise)")
+        print(f"Step: {cfg.t_steps} (pure noise)")
 
-    for _t in reversed(range(T)):
+    for _t in reversed(range(cfg.t_steps)):
         t = mx.full(shape=(1,), vals=_t, dtype=mx.int32)
         noise = model(x, t)
-        clean = (x - ALPHABAR_SQRT_OM[t][:, None, None, None] * noise) / ALPHABAR_SQRT[t]
-        mean = C1[t][:, None, None, None] * clean + C2[t][:, None, None, None] * x
+        clean = (x - diff.alphabar_sqrt_om[t][:, None, None, None] * noise) / diff.alphabar_sqrt[t]
+        mean = diff.c1[t][:, None, None, None] * clean + diff.c2[t][:, None, None, None] * x
 
         if _t > 0:
-            posterior_variance_t = POST_VAR[t][:, None, None, None]
+            posterior_variance_t = diff.post_var[t][:, None, None, None]
             _noise_sample = mx.random.normal(shape=x.shape, dtype=mx.float32)
             x = mean + mx.sqrt(posterior_variance_t) * _noise_sample
         else:
@@ -157,43 +213,42 @@ def sample_image(model: UNET, show_progress=False):
     return x
 
 
-def main():
-    batch_size = 8
-    epochs = 100
-    learning_rate = 1e-4
-    t_dim = 64
-    input_dim = 1
-    unet = UNET(input_dim, T, t_dim)
+def main(cfg: SimpleNamespace | None = None):
+    cfg = cfg or build_config()
+    diff = build_diffusion_tables(cfg)
+
+    unet = UNET(cfg.input_channels, cfg.t_steps, cfg.t_dim)
     mx.eval(unet.parameters())
     num_params = sum(v.size for _, v in tree_flatten(unet.parameters()))
     tora = Tora.create_experiment(
         name=f"DDPM_MNIST_{uuid4().hex[:3]}",
-        description=DESCRIPTION,
+        description=cfg.description,
         hyperparams={
-            "batch_size": batch_size,
-            "epochs": epochs,
-            "learning_rate": learning_rate,
-            "t": T,
-            "t_dim": t_dim,
-            "beta_min": BETA_MIN,
-            "beta_max": BETA_MAX,
+            "batch_size": cfg.batch_size,
+            "epochs": cfg.epochs,
+            "learning_rate": cfg.learning_rate,
+            "t": cfg.t_steps,
+            "t_dim": cfg.t_dim,
+            "beta_min": cfg.beta_min,
+            "beta_max": cfg.beta_max,
             "num_params": num_params,
         },
+        workspace_id=cfg.workspace_id,
     )
     tora.max_buffer_len = 1
 
-    optimizer = optim.AdamW(learning_rate=learning_rate)
+    optimizer = optim.AdamW(learning_rate=cfg.learning_rate)
     loss_and_grad_fn = nn.value_and_grad(unet, loss_fn)
-    dataset = load_mnist()
+    dataset = load_mnist(cfg)
     steps = 0
-    for epoch in range(epochs):
+    for epoch in range(cfg.epochs):
         culm_loss = 0
         num_samples = 0
 
-        for step, x_clean in enumerate(dataloader(dataset["train"], batch_size)):
+        for step, x_clean in enumerate(dataloader(dataset["train"], cfg.batch_size)):
             steps += step
-            t = mx.random.randint(0, T, (x_clean.shape[0],), dtype=mx.int32)
-            x_noisy, eps = add_noise(x_clean, t)
+            t = mx.random.randint(0, cfg.t_steps, (x_clean.shape[0],), dtype=mx.int32)
+            x_noisy, eps = add_noise(x_clean, t, diff)
             loss, grads = loss_and_grad_fn(unet, x_noisy, eps, t)
             optimizer.update(unet, grads)
             mx.eval(unet.parameters(), optimizer.state)
@@ -203,14 +258,14 @@ def main():
         epoch_loss = culm_loss / num_samples
         tora.log(name="epoch_loss", value=float(epoch_loss), step=epoch)
 
-        epoch_eval_loss = eval_fn(unet, dataset["val"])
+        epoch_eval_loss = eval_fn(unet, dataset["val"], cfg, diff)
         tora.log(name="epoch_eval_loss", value=float(epoch_eval_loss), step=epoch)
 
         if epoch == 0 or (epoch + 1) % 10 == 0:
             print(f"\nGenerating sample with step-by-step visualization (epoch {epoch + 1}):")
-            sample_image(unet, show_progress=True)
+            sample_image(unet, cfg, diff, show_progress=True)
         else:
-            samples = [sample_image(unet) for _ in range(3)]
+            samples = [sample_image(unet, cfg, diff) for _ in range(3)]
             samples_mx = mx.concat(samples, axis=1)
             display(samples_mx)
 

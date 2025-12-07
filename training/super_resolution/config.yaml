@@ -1,0 +1,18 @@
+dataset: /path/to/hr_images
+epochs: 50
+batch_size: 8
+learning_rate: 0.01
+upscale: 4
+hr_patch_size: 192
+steps_per_epoch: null
+no_augment: false
+seed: 42
+log_every: 10
+perceptual_layers: [0, 1, 2, 3]
+perceptual_weights: null
+l1_weight: 0.15
+ssim_weight: 0.85
+structural_weight: 1.0
+perceptual_weight: 0.1
+vgg_weights: ../networks/vgg16/weights.npz
+checkpoint_dir: null

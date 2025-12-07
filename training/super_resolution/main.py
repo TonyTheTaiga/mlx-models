@@ -1,16 +1,17 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
-import argparse
 import math
 from pathlib import Path
-from typing import Iterator, Sequence
+from types import SimpleNamespace
+from typing import Any, Iterator, Sequence
 
+import cv2
 import mlx.core as mx
 import mlx.nn as nn
 import mlx.optimizers as optim
 import numpy as np
-import cv2
+import yaml
 
 from networks.autoencoders.super_resolution.model import SuperResolution
 from networks.utils.perceputal_loss import PerceptualLoss
@@ -19,6 +20,7 @@ from networks.vgg16.model import VGG16
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_VGG_WEIGHTS = ROOT / "networks" / "vgg16" / "weights.npz"
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".bmp", ".webp"}
+CONFIG_PATH = Path(__file__).with_name("config.yaml")
 
 
 def list_image_files(directory: Path) -> list[Path]:
@@ -70,9 +72,7 @@ class SuperResolutionDataset:
     def _random_crop(self, image: np.ndarray) -> np.ndarray:
         h, w, _ = image.shape
         if h < self.hr_patch or w < self.hr_patch:
-            min_h = max(1, h)
-            min_w = max(1, w)
-            scale = max(self.hr_patch / min_h, self.hr_patch / min_w)
+            scale = max(self.hr_patch / max(1, h), self.hr_patch / max(1, w))
             nh = max(self.hr_patch, int(math.ceil(h * scale)))
             nw = max(self.hr_patch, int(math.ceil(w * scale)))
             image = resize_image(image, nw, nh, mode="bicubic")
@@ -94,14 +94,12 @@ class SuperResolutionDataset:
         return lr_patch, hr_patch
 
     def __getitem__(self, idx: int) -> tuple[np.ndarray, np.ndarray]:
-        image = read_image(self.paths[idx])
-        return self._create_pair(image)
+        return self._create_pair(read_image(self.paths[idx]))
 
     def sample_batch(self, batch_size: int) -> tuple[np.ndarray, np.ndarray]:
-        indices = self.rng.integers(0, len(self.paths), size=batch_size)
         lr_batch = []
         hr_batch = []
-        for index in indices:
+        for index in self.rng.integers(0, len(self.paths), size=batch_size):
             lr_patch, hr_patch = self[int(index)]
             lr_batch.append(lr_patch)
             hr_batch.append(hr_patch)
@@ -128,8 +126,9 @@ def iterate_minibatches(
             hr_batch.append(hr_np)
         if not lr_batch:
             continue
-        yield mx.array(np.asarray(lr_batch, dtype=np.float32)), mx.array(
-            np.asarray(hr_batch, dtype=np.float32)
+        yield (
+            mx.array(np.asarray(lr_batch, dtype=np.float32)),
+            mx.array(np.asarray(hr_batch, dtype=np.float32)),
         )
 
 
@@ -235,13 +234,15 @@ def make_loss_fn(
             layers=list(layers),
             weights=list(weights) if weights else None,
         )
-        total = structural_weight * struct_loss + perceptual_weight * perc_loss
-        return total, (sr, struct_loss, perc_loss, ssim_value, l1_value)
+        return (
+            structural_weight * struct_loss + perceptual_weight * perc_loss,
+            (sr, struct_loss, perc_loss, ssim_value, l1_value),
+        )
 
     return loss_fn
 
 
-def train(args: argparse.Namespace) -> None:
+def train(args: SimpleNamespace) -> None:
     args.dataset = args.dataset.expanduser()
     args.vgg_weights = args.vgg_weights.expanduser()
     if args.checkpoint_dir is not None:
@@ -263,17 +264,13 @@ def train(args: argparse.Namespace) -> None:
     feature_extractor.load_weights(str(args.vgg_weights), strict=True)
     perceptual_loss = PerceptualLoss(feature_extractor)
 
-    perceptual_layers = list(args.perceptual_layers)
-    per_layer_weights: list[float] | None = None
-    if args.perceptual_weights:
-        if len(args.perceptual_weights) != len(perceptual_layers):
-            raise ValueError("number of perceptual weights must match number of perceptual layers")
-        per_layer_weights = list(args.perceptual_weights)
+    if args.perceptual_weights and len(args.perceptual_weights) != len(args.perceptual_layers):
+        raise ValueError("number of perceptual weights must match number of perceptual layers")
 
     loss_fn = make_loss_fn(
         perceptual_loss=perceptual_loss,
-        layers=perceptual_layers,
-        weights=per_layer_weights,
+        layers=list(args.perceptual_layers),
+        weights=list(args.perceptual_weights) if args.perceptual_weights else None,
         l1_weight=args.l1_weight,
         ssim_weight=args.ssim_weight,
         structural_weight=args.structural_weight,
@@ -306,8 +303,8 @@ def train(args: argparse.Namespace) -> None:
             iterate_minibatches(dataset, args.batch_size, steps_per_epoch),
             start=1,
         ):
-            (loss_value, (sr, struct_loss, perc_loss, ssim_value, l1_value)), grads = loss_and_grad_fn(
-                model, lr_batch, hr_batch
+            (loss_value, (sr, struct_loss, perc_loss, ssim_value, l1_value)), grads = (
+                loss_and_grad_fn(model, lr_batch, hr_batch)
             )
             optimizer.update(model, grads)
             mx.eval(model.parameters(), optimizer.state)
@@ -334,81 +331,86 @@ def train(args: argparse.Namespace) -> None:
                     f"ssim={ssim_item:.4f} psnr={psnr_item:.2f} l1={l1_item:.4f}"
                 )
 
-        epoch_loss = running_loss / max(1, num_steps)
-        epoch_struct = running_struct / max(1, num_steps)
-        epoch_perc = running_perc / max(1, num_steps)
-        epoch_ssim = running_ssim / max(1, num_steps)
-        epoch_l1 = running_l1 / max(1, num_steps)
-        epoch_psnr = running_psnr / max(1, num_steps)
+        inv_steps = 1.0 / max(1, num_steps)
+        mean_loss = running_loss * inv_steps
+        mean_struct = running_struct * inv_steps
+        mean_perc = running_perc * inv_steps
+        mean_ssim = running_ssim * inv_steps
+        mean_l1 = running_l1 * inv_steps
+        mean_psnr = running_psnr * inv_steps
 
         print(
             f"[epoch {epoch:03d}/{args.epochs:03d}] "
-            f"loss={epoch_loss:.4f} struct={epoch_struct:.4f} perc={epoch_perc:.4f} "
-            f"ssim={epoch_ssim:.4f} psnr={epoch_psnr:.2f} l1={epoch_l1:.4f}"
+            f"loss={mean_loss:.4f} struct={mean_struct:.4f} perc={mean_perc:.4f} "
+            f"ssim={mean_ssim:.4f} psnr={mean_psnr:.2f} l1={mean_l1:.4f}"
         )
 
         if checkpoint_dir is not None:
             ckpt_path = checkpoint_dir / f"superres_epoch_{epoch:04d}.npz"
             model.save_weights(str(ckpt_path))
-            if epoch_psnr > best_psnr:
-                best_psnr = epoch_psnr
+            if mean_psnr > best_psnr:
+                best_psnr = mean_psnr
                 model.save_weights(str(checkpoint_dir / "best.npz"))
 
 
-def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Train the super-resolution autoencoder.")
-    parser.add_argument("--dataset", type=Path, required=True, help="path to HR training images")
-    parser.add_argument("--epochs", type=int, default=50, help="number of training epochs")
-    parser.add_argument("--batch-size", type=int, default=8, help="training batch size")
-    parser.add_argument("--learning-rate", type=float, default=1e-2, help="optimizer learning rate")
-    parser.add_argument("--upscale", type=int, default=4, help="super-resolution scale factor")
-    parser.add_argument(
-        "--hr-patch-size",
-        type=int,
-        default=192,
-        help="size of cropped HR patches (must be divisible by the upscale factor)",
+def load_yaml_config(path: Path) -> dict[str, Any]:
+    with path.expanduser().open("r", encoding="utf-8") as f:
+        data = yaml.safe_load(f) or {}
+    return data
+
+
+def resolve_path(value: str | None, base: Path) -> Path | None:
+    if value is None:
+        return None
+    path = Path(value).expanduser()
+    if not path.is_absolute():
+        path = (base / path).resolve()
+    return path
+
+
+def build_args_from_config(config_path: Path = CONFIG_PATH) -> SimpleNamespace:
+    config = load_yaml_config(config_path)
+    base = config_path.parent
+
+    dataset_value = config.get("dataset")
+    if dataset_value is None:
+        raise ValueError("`dataset` must be set in the config file")
+    dataset = resolve_path(dataset_value, base)
+
+    vgg_weights = resolve_path(config.get("vgg_weights"), base) or DEFAULT_VGG_WEIGHTS
+    checkpoint_dir = resolve_path(config.get("checkpoint_dir"), base)
+
+    def as_int_list(value, default):
+        seq = value if value is not None else default
+        return [int(v) for v in seq]
+
+    def as_float_list(value):
+        if value is None:
+            return None
+        return [float(v) for v in value]
+
+    steps_value = config.get("steps_per_epoch")
+    return SimpleNamespace(
+        dataset=dataset,
+        epochs=int(config.get("epochs", 50)),
+        batch_size=int(config.get("batch_size", 8)),
+        learning_rate=float(config.get("learning_rate", 1e-2)),
+        upscale=int(config.get("upscale", 4)),
+        hr_patch_size=int(config.get("hr_patch_size", 192)),
+        steps_per_epoch=None if steps_value is None else int(steps_value),
+        no_augment=bool(config.get("no_augment", False)),
+        seed=int(config.get("seed", 42)),
+        log_every=int(config.get("log_every", 10)),
+        perceptual_layers=as_int_list(config.get("perceptual_layers"), [0, 1, 2, 3]),
+        perceptual_weights=as_float_list(config.get("perceptual_weights")),
+        l1_weight=float(config.get("l1_weight", 0.15)),
+        ssim_weight=float(config.get("ssim_weight", 0.85)),
+        structural_weight=float(config.get("structural_weight", 1.0)),
+        perceptual_weight=float(config.get("perceptual_weight", 0.1)),
+        vgg_weights=vgg_weights,
+        checkpoint_dir=checkpoint_dir,
     )
-    parser.add_argument(
-        "--steps-per-epoch",
-        type=int,
-        default=None,
-        help="optional fixed number of steps per epoch (defaults to len(dataset)//batch_size)",
-    )
-    parser.add_argument("--no-augment", action="store_true", help="disable random flips during training")
-    parser.add_argument("--seed", type=int, default=42, help="PRNG seed")
-    parser.add_argument("--log-every", type=int, default=10, help="steps between logging updates")
-    parser.add_argument(
-        "--perceptual-layers",
-        type=int,
-        nargs="+",
-        default=[0, 1, 2, 3],
-        help="indices of VGG feature maps to use inside the perceptual loss",
-    )
-    parser.add_argument(
-        "--perceptual-weights",
-        type=float,
-        nargs="+",
-        default=None,
-        help="optional weights matching the perceptual layers",
-    )
-    parser.add_argument("--l1-weight", type=float, default=0.15, help="weight applied to pixel L1 loss")
-    parser.add_argument("--ssim-weight", type=float, default=0.85, help="weight applied to (1 - SSIM)")
-    parser.add_argument("--structural-weight", type=float, default=1.0, help="global weight for structural loss")
-    parser.add_argument("--perceptual-weight", type=float, default=0.1, help="global weight for perceptual loss")
-    parser.add_argument(
-        "--vgg-weights",
-        type=Path,
-        default=DEFAULT_VGG_WEIGHTS,
-        help="path to pre-trained VGG16 weights used by the perceptual loss",
-    )
-    parser.add_argument(
-        "--checkpoint-dir",
-        type=Path,
-        default=None,
-        help="optional directory where model checkpoints will be stored",
-    )
-    return parser.parse_args()
 
 
 if __name__ == "__main__":
-    train(parse_args())
+    train(build_args_from_config())
