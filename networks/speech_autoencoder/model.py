@@ -86,23 +86,29 @@ class Decoder(nn.Module):
         return waveform
 
 
+class SpeechAutoEncoder(nn.Module):
+    def __init__(self, in_dims: int):
+        super().__init__()
+        self.encoder = Encoder(in_channels=in_dims)
+        self.decoder = Decoder()
+
+    def __call__(self, x: mx.array):
+        x = self.encoder(x)
+        x = self.decoder(x)
+        return x
+
+
 if __name__ == "__main__":
     batch_size = 2
-    sequence_length = 400  # mock number of frames
-    mel_bins = 228  # mock mel-dim as described in the paper
+    sequence_length = 400
+    mel_bins = 228
 
-    encoder = Encoder(in_channels=mel_bins)
-    decoder = Decoder()
-
-    mock_mel = mx.random.uniform(
+    ae = SpeechAutoEncoder(in_dims=mel_bins)
+    x = mx.random.uniform(
         low=0.0,
         high=1.0,
-        shape=(batch_size, sequence_length, mel_bins),
+        shape=(batch_size, 400, 228),
     )
-    print(f"Mock mel input shape: {mock_mel.shape}")
-
-    encoded = encoder(mock_mel)
-    print(f"Encoder output shape: {encoded.shape}")
-
-    decoded = decoder(encoded)
-    print(f"Decoder output shape: {decoded.shape}")
+    print(f"Input Shape: {x.shape}")
+    output = ae(x)
+    print(f"AE output shape: {output.shape}")
