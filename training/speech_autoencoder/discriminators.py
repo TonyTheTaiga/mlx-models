@@ -138,23 +138,45 @@ class MPD(nn.Module):
                 raise ValueError("period must be positive")
             self.period = int(period)
 
-            k = (5, 1)
-            p = (2, 0)
             self.layers = [
-                nn.Conv2d(in_channels=1, out_channels=16, kernel_size=k, stride=(3, 1), padding=p),
-                nn.LeakyReLU(),
-                nn.Conv2d(in_channels=16, out_channels=64, kernel_size=k, stride=(3, 1), padding=p),
-                nn.LeakyReLU(),
                 nn.Conv2d(
-                    in_channels=64, out_channels=256, kernel_size=k, stride=(3, 1), padding=p
+                    in_channels=1,
+                    out_channels=16,
+                    kernel_size=(5, 1),
+                    stride=(3, 1),
+                    padding=(2, 0),
                 ),
                 nn.LeakyReLU(),
                 nn.Conv2d(
-                    in_channels=256, out_channels=512, kernel_size=k, stride=(3, 1), padding=p
+                    in_channels=16,
+                    out_channels=64,
+                    kernel_size=(5, 1),
+                    stride=(3, 1),
+                    padding=(2, 0),
                 ),
                 nn.LeakyReLU(),
                 nn.Conv2d(
-                    in_channels=512, out_channels=512, kernel_size=k, stride=(1, 1), padding=p
+                    in_channels=64,
+                    out_channels=256,
+                    kernel_size=(5, 1),
+                    stride=(3, 1),
+                    padding=(2, 0),
+                ),
+                nn.LeakyReLU(),
+                nn.Conv2d(
+                    in_channels=256,
+                    out_channels=512,
+                    kernel_size=(5, 1),
+                    stride=(3, 1),
+                    padding=(2, 0),
+                ),
+                nn.LeakyReLU(),
+                nn.Conv2d(
+                    in_channels=512,
+                    out_channels=512,
+                    kernel_size=(5, 1),
+                    stride=(1, 1),
+                    padding=(2, 0),
                 ),
                 nn.LeakyReLU(),
                 nn.Conv2d(
