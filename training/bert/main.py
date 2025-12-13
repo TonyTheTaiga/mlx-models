@@ -1,13 +1,13 @@
+import json
+import math
 from pathlib import Path
 from uuid import uuid4
-import math
-import json
-import polars as pl
 
 import mlx.core as mx
 import mlx.nn as nn
 import mlx.optimizers as optim
 import numpy as np
+import polars as pl
 import tiktoken
 from mlx.utils import tree_flatten
 from tora import Tora
@@ -136,8 +136,6 @@ def count_total_sequences(
     path: Path, tokenizer, seq_len: int, max_sequences: int | None = None
 ) -> int:
     if max_sequences is not None:
-        # If we have a hard limit, we can just return that (or check if file is smaller, but that's slow)
-        # For speed, let's just return the limit. The training loop handles the case where data runs out early.
         return max_sequences
 
     total_tokens = 0
@@ -338,8 +336,6 @@ def main():
     total_sequences = count_total_sequences(
         DATASET_PATH, tokenizer, seq_len, max_sequences=max_sequences
     )
-    if max_sequences is None:
-        print(f"max_sequences=None, streaming all {total_sequences:,} sequences in the dataset.")
     tora = Tora.create_experiment(
         name=f"BERT_MLM_{uuid4().hex[:3]}",
         description=DESCRIPTION,

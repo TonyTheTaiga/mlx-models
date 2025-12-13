@@ -1,10 +1,3 @@
-"""Mel-spectrogram utilities for the speech autoencoder training pipeline.
-
-The module exposes small encoder/decoder helpers that work entirely with
-NumPy so they can run inside data-loader processes and optionally emit
-``mlx.core`` arrays when requested.
-"""
-
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -230,9 +223,18 @@ class MelSpectrogramEncoder:
         waveform: Sequence[float] | np.ndarray,
         *,
         log_mel: bool = True,
+        pad_mode: str | None = "reflect",
         as_mx: bool = False,
     ):
         audio = _prepare_signal(waveform)
+        if pad_mode is not None:
+            pad = max((self.config.n_fft - self.config.hop_length) // 2, 0)
+            if pad > 0:
+                mode = pad_mode
+                if mode == "reflect" and audio.size <= 1:
+                    mode = "constant"
+                audio = np.pad(audio, (pad, pad), mode=mode)  # pyright: ignore
+
         stft_matrix = _stft(audio, self.config, self._window)
         magnitude = np.abs(stft_matrix) ** self.config.power
         mel = magnitude @ self._mel_filter.T
@@ -292,10 +294,3 @@ class MelSpectrogramDecoder:
         return waveform
 
     __call__ = decode
-
-
-__all__ = [
-    "MelSpectrogramConfig",
-    "MelSpectrogramEncoder",
-    "MelSpectrogramDecoder",
-]

@@ -1,27 +1,12 @@
-"""Utilities for loading the spontaneous speech corpus used by the autoencoder.
-
-This script is intentionally self-contained so it can be imported in notebooks
-or executed from the command line to inspect the dataset:
-
-    python training/speech_autoencoder/dataset.py --split train --limit 3
-
-The loader maps the TSV schema documented in the dataset card to strongly typed
-`SpeechSample` dataclass instances and provides helpers for decoding the MP3
-clips through ``ffmpeg`` when audio is required.
-"""
-
-from __future__ import annotations
-
 import argparse
 import shutil
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterator, Sequence
+from typing import Iterator, Sequence, overload
 
 import numpy as np
 import polars as pl
-
 
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_DATASET_DIR = ROOT / "data" / "sps-corpus-1.0-2025-11-25-en"
@@ -107,7 +92,6 @@ def _decode_audio_with_ffmpeg(audio_path: Path, target_sr: int) -> tuple[np.ndar
 
 
 def decode_audio_file(audio_path: Path | str, target_sr: int = 16_000) -> tuple[np.ndarray, int]:
-    """Decode an arbitrary audio file into a mono waveform via ffmpeg."""
     path = Path(audio_path)
     if not path.exists():
         raise FileNotFoundError(f"Audio file '{path}' was not found")
@@ -231,8 +215,6 @@ def _row_to_sample(
 
 
 class SpsCorpusDataset(Sequence[SpeechSample]):
-    """Materializes the SPS corpus into Python objects for quick experimentation."""
-
     def __init__(
         self,
         dataset_dir: Path | str | None = None,
@@ -243,8 +225,10 @@ class SpsCorpusDataset(Sequence[SpeechSample]):
     ) -> None:
         base_dir = Path(dataset_dir) if dataset_dir else DEFAULT_DATASET_DIR
         self.dataset_dir = _ensure_dataset_dir(base_dir)
-        self._requested_splits = {split.lower()} if isinstance(split, str) else (
-            {s.lower() for s in split} if split else None
+        self._requested_splits = (
+            {split.lower()}
+            if isinstance(split, str)
+            else ({s.lower() for s in split} if split else None)
         )
         self._limit = limit
         self._drop_quality_tags = set(drop_quality_tags or [])
@@ -256,9 +240,7 @@ class SpsCorpusDataset(Sequence[SpeechSample]):
         reported_map = _load_reported_map(self.dataset_dir)
 
         if self._requested_splits:
-            df = df.filter(
-                pl.col("split").str.to_lowercase().is_in(list(self._requested_splits))
-            )
+            df = df.filter(pl.col("split").str.to_lowercase().is_in(list(self._requested_splits)))
 
         samples: list[SpeechSample] = []
         for row in df.iter_rows(named=True):
@@ -274,13 +256,19 @@ class SpsCorpusDataset(Sequence[SpeechSample]):
                 break
         return tuple(samples)
 
-    def __len__(self) -> int:  # pragma: no cover - trivial
+    def __len__(self) -> int:
         return len(self._samples)
 
-    def __getitem__(self, idx: int) -> SpeechSample:  # pragma: no cover - trivial
+    @overload
+    def __getitem__(self, idx: int) -> SpeechSample: ...
+
+    @overload
+    def __getitem__(self, idx: slice) -> tuple[SpeechSample, ...]: ...
+
+    def __getitem__(self, idx: int | slice) -> SpeechSample | tuple[SpeechSample, ...]:
         return self._samples[idx]
 
-    def __iter__(self) -> Iterator[SpeechSample]:  # pragma: no cover - trivial
+    def __iter__(self) -> Iterator[SpeechSample]:
         return iter(self._samples)
 
     @property
@@ -348,5 +336,5 @@ def main(args: Sequence[str] | None = None) -> None:
         print(f"     transcription: {sample.transcription}")
 
 
-if __name__ == "__main__":  # pragma: no cover
+if __name__ == "__main__":
     main()

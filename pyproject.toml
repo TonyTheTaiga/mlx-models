@@ -12,19 +12,19 @@ keywords = ["mlx"]
 license = { text = "BSD-3-Clause" }
 classifiers = ["Programming Language :: Python :: 3"]
 dependencies = [
-    "mlx",
- "opencv-python",
- 'tora',
- 'tqdm',
- "tiktoken",
- "polars>=1.35.2",
+  "mlx",
+  "opencv-python",
+  'tora',
+  'tqdm',
+  "tiktoken",
+  "polars>=1.35.2",
 ]
 dynamic = ["version"]
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["networks*"]
-exclude = ["tests*", "tools*"]
+include = ["networks", "training"]
+exclude = ["tests", "tools"]
 
 [tool.ruff]
 line-length = 100

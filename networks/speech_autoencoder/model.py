@@ -87,10 +87,10 @@ class Decoder(nn.Module):
 
 
 class SpeechAutoEncoder(nn.Module):
-    def __init__(self, in_dims: int):
+    def __init__(self, in_dims: int, hidden_dims: int = 24, out_dims: int = 512):
         super().__init__()
-        self.encoder = Encoder(in_dims=in_dims, out_dims=24)
-        self.decoder = Decoder(in_dims=24, out_dims=512)
+        self.encoder = Encoder(in_dims=in_dims, out_dims=hidden_dims)
+        self.decoder = Decoder(in_dims=hidden_dims, out_dims=out_dims)
 
     def __call__(self, x: mx.array):
         x = self.encoder(x)
