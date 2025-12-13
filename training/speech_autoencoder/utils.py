@@ -1,3 +1,5 @@
+import math
+
 import mlx.core as mx
 
 
@@ -17,7 +19,7 @@ def hann_window(length: int, *, dtype: mx.Dtype = mx.float32) -> mx.array:
     if length <= 1:
         return mx.ones((length,), dtype=dtype)
     n = mx.arange(length, dtype=dtype)
-    return 0.5 - 0.5 * mx.cos((2.0 * mx.array(3.141592653589793, dtype=dtype) * n) / (length - 1))
+    return 0.5 - 0.5 * mx.cos((2.0 * mx.array(math.pi, dtype=dtype) * n) / (length - 1))
 
 
 def reflect_pad_1d(x: mx.array, pad_left: int, pad_right: int, *, axis: int = -1) -> mx.array:
