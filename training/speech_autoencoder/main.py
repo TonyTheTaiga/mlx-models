@@ -1,3 +1,4 @@
+import argparse
 import math
 import random
 from pathlib import Path
@@ -25,6 +26,55 @@ from training.speech_autoencoder.loss import (
     reconstruction_loss,
 )
 from training.speech_autoencoder.mels import MelSpectrogramConfig, MelSpectrogramEncoder
+from training.speech_autoencoder.utils import save_full_reconstruction
+
+
+def _compute_learning_rate(
+    step: int,
+    *,
+    base_lr: float,
+    min_lr: float,
+    warmup_steps: int,
+    total_steps: int,
+    schedule: str,
+) -> float:
+    if base_lr <= 0:
+        raise ValueError("base_lr must be positive")
+    if min_lr < 0:
+        raise ValueError("min_lr must be non-negative")
+    if schedule != "none" and min_lr > base_lr:
+        raise ValueError("min_lr must be <= base_lr when using decay")
+    if warmup_steps < 0:
+        raise ValueError("warmup_steps must be non-negative")
+    if total_steps <= 0:
+        raise ValueError("total_steps must be positive")
+
+    step = int(step)
+    if warmup_steps > 0 and step < warmup_steps:
+        return base_lr * float(step + 1) / float(warmup_steps)
+
+    if schedule == "none":
+        return base_lr
+
+    t = max(step - warmup_steps, 0)
+    T = max(total_steps - warmup_steps - 1, 1)
+    frac = min(float(t) / float(T), 1.0)
+
+    if schedule == "cosine":
+        cosine = 0.5 * (1.0 + math.cos(math.pi * frac))
+        return min_lr + (base_lr - min_lr) * cosine
+    if schedule == "linear":
+        return base_lr + (min_lr - base_lr) * frac
+    if schedule == "exponential":
+        if min_lr == 0.0:
+            return base_lr * (0.1 ** frac)
+        return base_lr * math.exp(math.log(min_lr / base_lr) * frac)
+
+    raise ValueError(f"Unknown lr schedule: {schedule}")
+
+
+def _set_optim_lr(optimizer: optim.Optimizer, lr: float) -> None:
+    optimizer.learning_rate = float(lr)
 
 
 def loss_and_grads_fn(
@@ -38,8 +88,6 @@ def loss_and_grads_fn(
     mpd_loss_and_grad_fn,
     g_loss_and_grad_fn,
 ) -> tuple[dict[str, float], object, object, object]:
-    """Compute losses and gradients for AE/MRD/MPD for one batch."""
-    # Forward pass for logging + discriminator updates (generator treated as a source of samples).
     fake_waveform = ae(mel)
 
     recon = reconstruction_loss(fake_waveform, real_waveform)
@@ -128,7 +176,7 @@ def dataloader(
     batch_size: int,
     segment_seconds: float = 1.0,
     sample_rate: int = 32_000,
-    mel_config: MelSpectrogramConfig | None = None,
+    mel_config: MelSpectrogramConfig,
     out_dims: int | None = None,
     log_mel: bool = True,
     shuffle: bool = True,
@@ -143,15 +191,8 @@ def dataloader(
     if target_len <= 0:
         raise ValueError("segment_seconds * sample_rate must be positive")
 
-    mel_cfg = mel_config or MelSpectrogramConfig(
-        sample_rate=sample_rate,
-        n_fft=1024,
-        hop_length=256,
-        win_length=1024,
-        n_mels=228,
-    )
-    encoder = MelSpectrogramEncoder(mel_cfg)
-    out_dims_val = int(out_dims) if out_dims is not None else int(mel_cfg.hop_length)
+    encoder = MelSpectrogramEncoder(mel_config)
+    out_dims_val = int(out_dims) if out_dims is not None else int(mel_config.hop_length)
     if out_dims_val <= 0:
         raise ValueError("out_dims must be positive")
 
@@ -169,7 +210,7 @@ def dataloader(
         samples = dataset[start : start + batch_size]
         for sample in samples:
             wav, _sr = sample.load_waveform(target_sr=sample_rate, as_mx=False)
-            aligned_len = max((target_len // out_dims_val) * out_dims_val, out_dims_val)
+            aligned_len = max(int(math.ceil(target_len / out_dims_val) * out_dims_val), out_dims_val)
             wav = _pad_or_crop_1d(wav, aligned_len, rng=rng)
             mel = encoder.encode(wav, log_mel=log_mel, as_mx=False)
             if int(mel.shape[0]) * out_dims_val != wav.shape[0]:
@@ -193,16 +234,124 @@ def dataloader(
             batch_ids = []
 
 
-def main():
-    dataset_dir = Path(__file__).resolve().parents[2] / "data" / "sps-corpus-1.0-2025-11-25-en"
-    dataset = SpsCorpusDataset(dataset_dir=dataset_dir, split="train")
+def random_dataloader(
+    dataset: SpsCorpusDataset,
+    *,
+    batch_size: int,
+    segment_seconds: float,
+    sample_rate: int,
+    mel_config: MelSpectrogramConfig,
+    out_dims: int | None = None,
+    log_mel: bool = True,
+    seed: int = 0,
+) -> Iterator[dict[str, mx.array]]:
+    if batch_size <= 0:
+        raise ValueError("batch_size must be positive")
+    if segment_seconds <= 0:
+        raise ValueError("segment_seconds must be positive")
 
-    sample_rate = 32_000
-    paper_segment_seconds = 0.19
-    segment_seconds = paper_segment_seconds
-    batch_size = 32
-    epochs = 100
-    learning_rate = 2e-4
+    target_len = int(round(segment_seconds * sample_rate))
+    if target_len <= 0:
+        raise ValueError("segment_seconds * sample_rate must be positive")
+
+    encoder = MelSpectrogramEncoder(mel_config)
+    out_dims_val = int(out_dims) if out_dims is not None else int(mel_config.hop_length)
+    if out_dims_val <= 0:
+        raise ValueError("out_dims must be positive")
+
+    aligned_len = max(int(math.ceil(target_len / out_dims_val) * out_dims_val), out_dims_val)
+
+    rng = random.Random(seed)
+    np_rng = np.random.default_rng(seed)
+
+    while True:
+        if len(dataset) == 0:
+            raise ValueError("dataset is empty")
+        indices = np_rng.integers(0, len(dataset), size=batch_size)
+        batch_mels: list[mx.array] = []
+        batch_wavs: list[mx.array] = []
+        batch_ids: list[int] = []
+
+        for idx in indices:
+            sample = dataset[int(idx)]
+            wav, _sr = sample.load_waveform(target_sr=sample_rate, as_mx=False)
+            wav = _pad_or_crop_1d(wav, aligned_len, rng=rng)
+            mel = encoder.encode(wav, log_mel=log_mel, as_mx=False)
+            if int(mel.shape[0]) * out_dims_val != wav.shape[0]:
+                raise ValueError(
+                    f"Waveform/mel misalignment: wav={wav.shape[0]} "
+                    f"mel_frames={mel.shape[0]} out_dims={out_dims_val}"
+                )
+
+            batch_mels.append(mx.array(mel, dtype=mx.float32))
+            batch_wavs.append(mx.array(np.asarray(wav), dtype=mx.float32)[:, None])
+            batch_ids.append(sample.audio_id)
+
+        yield {
+            "mel": mx.stack(batch_mels, axis=0),
+            "waveform": mx.stack(batch_wavs, axis=0),
+            "audio_id": mx.array(batch_ids, dtype=mx.int32),
+        }
+
+
+def _parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--dataset-dir",
+        type=Path,
+        default=Path(__file__).resolve().parents[2]
+        / "data"
+        / "sps-corpus-1.0-2025-11-25-en",
+    )
+    parser.add_argument("--sample-rate", type=int, default=32_000)
+    parser.add_argument("--segment-seconds", type=float, default=0.19)
+    parser.add_argument("--batch-size", type=int, default=8)
+    parser.add_argument("--steps", type=int, default=50_000, help="Number of training steps.")
+    parser.add_argument("--learning-rate", type=float, default=2e-4, help="Base learning rate.")
+    parser.add_argument(
+        "--lr-schedule",
+        choices=("none", "cosine", "linear", "exponential"),
+        default="cosine",
+        help="Learning-rate schedule applied per training step.",
+    )
+    parser.add_argument(
+        "--min-learning-rate",
+        type=float,
+        default=2e-5,
+        help="Lower bound for decayed learning rate.",
+    )
+    parser.add_argument(
+        "--warmup-steps",
+        type=int,
+        default=0,
+        help="Linear warmup steps before decay.",
+    )
+    parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--log-every", type=int, default=100)
+    parser.add_argument(
+        "--save-every",
+        type=int,
+        default=0,
+        help="Write a full reconstruction every N steps (0 disables).",
+    )
+    return parser.parse_args()
+
+
+def run_train(args: argparse.Namespace) -> None:
+    dataset = SpsCorpusDataset(dataset_dir=args.dataset_dir, split="train")
+
+    sample_rate = int(args.sample_rate)
+    segment_seconds = float(args.segment_seconds)
+    batch_size = int(args.batch_size)
+    steps = int(args.steps)
+    learning_rate = float(args.learning_rate)
+    min_learning_rate = float(args.min_learning_rate)
+    lr_schedule = str(args.lr_schedule)
+    warmup_steps = int(args.warmup_steps)
+    seed = int(args.seed)
+    log_every = max(1, int(args.log_every))
+    save_every = int(args.save_every)
+
     mel_cfg = MelSpectrogramConfig(
         sample_rate=sample_rate,
         n_fft=2048,
@@ -224,99 +373,185 @@ def main():
     mpd_loss_and_grad_fn = nn.value_and_grad(mpd, mpd_loss_fn)
     g_loss_and_grad_fn = nn.value_and_grad(ae, loss_fn)
 
-    batches_per_epoch = max(1, math.ceil(len(dataset) / batch_size))
+    total_steps = steps
     print(
         "config:",
         f"sr={sample_rate}",
         f"segment_seconds={segment_seconds:.5f}",
-        f"(paper_segment_seconds={paper_segment_seconds:.2f})",
         f"mel_nfft={mel_cfg.n_fft}",
         f"mel_hop={mel_cfg.hop_length}",
         f"mel_nmels={mel_cfg.n_mels}",
         f"lr={learning_rate:g}",
+        f"lr_schedule={lr_schedule}",
+        f"min_lr={min_learning_rate:g}",
+        f"warmup_steps={warmup_steps}",
+        f"steps={steps}",
+        f"seed={seed}",
         f"lambda_recon={LAMBDA_RECON:g}",
         f"lambda_adv={LAMBDA_ADV:g}",
         f"lambda_fm={LAMBDA_FM:g}",
         f"adv_kind={ADV_KIND}",
     )
 
-    for epoch in range(epochs):
-        loader = dataloader(
-            dataset,
-            batch_size=batch_size,
-            segment_seconds=segment_seconds,
-            sample_rate=sample_rate,
-            mel_config=mel_cfg,
-            out_dims=mel_cfg.hop_length,
-            log_mel=True,
-            shuffle=True,
-            seed=epoch,
+    loader = random_dataloader(
+        dataset,
+        batch_size=batch_size,
+        segment_seconds=segment_seconds,
+        sample_rate=sample_rate,
+        mel_config=mel_cfg,
+        out_dims=mel_cfg.hop_length,
+        log_mel=True,
+        seed=seed,
+    )
+
+    sum_mrd_d = 0.0
+    sum_mpd_d = 0.0
+    sum_g = 0.0
+    sum_recon = 0.0
+    sum_adv_mrd = 0.0
+    sum_adv_mpd = 0.0
+    sum_fm_mrd = 0.0
+    sum_fm_mpd = 0.0
+    num_steps = 0
+
+    window_mrd_d = 0.0
+    window_mpd_d = 0.0
+    window_g = 0.0
+    window_recon = 0.0
+    window_adv_mrd = 0.0
+    window_adv_mpd = 0.0
+    window_fm_mrd = 0.0
+    window_fm_mpd = 0.0
+    window_count = 0
+
+    progress = tqdm(range(steps), total=steps, desc="train")
+    last_lr = learning_rate
+    for step in progress:
+        lr = _compute_learning_rate(
+            step,
+            base_lr=learning_rate,
+            min_lr=min_learning_rate,
+            warmup_steps=warmup_steps,
+            total_steps=total_steps,
+            schedule=lr_schedule,
+        )
+        last_lr = lr
+        _set_optim_lr(opt_g, lr)
+        _set_optim_lr(opt_mrd, lr)
+        _set_optim_lr(opt_mpd, lr)
+
+        batch = next(loader)
+        mel = batch["mel"]
+        real_waveform = batch["waveform"]
+        metrics = train_step(
+            ae=ae,
+            mrd=mrd,
+            mpd=mpd,
+            opt_g=opt_g,
+            opt_mrd=opt_mrd,
+            opt_mpd=opt_mpd,
+            mel=mel,
+            real_waveform=real_waveform,
+            mrd_loss_and_grad_fn=mrd_loss_and_grad_fn,
+            mpd_loss_and_grad_fn=mpd_loss_and_grad_fn,
+            g_loss_and_grad_fn=g_loss_and_grad_fn,
         )
 
-        sum_mrd_d = 0.0
-        sum_mpd_d = 0.0
-        sum_g = 0.0
-        sum_recon = 0.0
-        sum_adv_mrd = 0.0
-        sum_adv_mpd = 0.0
-        sum_fm_mrd = 0.0
-        sum_fm_mpd = 0.0
-        num_batches = 0
+        mrd_d_val = metrics["mrd_d"]
+        mpd_d_val = metrics["mpd_d"]
+        g_val = metrics["g"]
 
-        progress = tqdm(loader, total=batches_per_epoch, desc=f"epoch {epoch + 1}/{epochs}")
-        for batch in progress:
-            mel = batch["mel"]
-            real_waveform = batch["waveform"]
-            metrics = train_step(
-                ae=ae,
-                mrd=mrd,
-                mpd=mpd,
-                opt_g=opt_g,
-                opt_mrd=opt_mrd,
-                opt_mpd=opt_mpd,
-                mel=mel,
-                real_waveform=real_waveform,
-                mrd_loss_and_grad_fn=mrd_loss_and_grad_fn,
-                mpd_loss_and_grad_fn=mpd_loss_and_grad_fn,
-                g_loss_and_grad_fn=g_loss_and_grad_fn,
-            )
+        sum_mrd_d += mrd_d_val
+        sum_mpd_d += mpd_d_val
+        sum_g += g_val
+        sum_recon += metrics["recon"]
+        sum_adv_mrd += metrics["adv_mrd"]
+        sum_adv_mpd += metrics["adv_mpd"]
+        sum_fm_mrd += metrics["fm_mrd"]
+        sum_fm_mpd += metrics["fm_mpd"]
+        num_steps += 1
 
-            mrd_d_val = metrics["mrd_d"]
-            mpd_d_val = metrics["mpd_d"]
-            g_val = metrics["g"]
-            sum_mrd_d += mrd_d_val
-            sum_mpd_d += mpd_d_val
-            sum_g += g_val
-            sum_recon += metrics["recon"]
-            sum_adv_mrd += metrics["adv_mrd"]
-            sum_adv_mpd += metrics["adv_mpd"]
-            sum_fm_mrd += metrics["fm_mrd"]
-            sum_fm_mpd += metrics["fm_mpd"]
-            num_batches += 1
+        window_mrd_d += mrd_d_val
+        window_mpd_d += mpd_d_val
+        window_g += g_val
+        window_recon += metrics["recon"]
+        window_adv_mrd += metrics["adv_mrd"]
+        window_adv_mpd += metrics["adv_mpd"]
+        window_fm_mrd += metrics["fm_mrd"]
+        window_fm_mpd += metrics["fm_mpd"]
+        window_count += 1
 
-            progress.set_postfix(
-                mrd_d=f"{mrd_d_val:.4f}",
-                mpd_d=f"{mpd_d_val:.4f}",
-                g=f"{g_val:.4f}",
-                recon=f"{metrics['recon']:.4f}",
-                adv=f"{metrics['adv']:.4f}",
-                fm=f"{metrics['fm']:.4f}",
-            )
-
-        denom = max(num_batches, 1)
-        print(
-            f"epoch {epoch + 1}/{epochs} "
-            f"avg_mrd_d={sum_mrd_d / denom:.6f} "
-            f"avg_mpd_d={sum_mpd_d / denom:.6f} "
-            f"avg_g={sum_g / denom:.6f} "
-            f"avg_recon={sum_recon / denom:.6f} "
-            f"avg_adv={(sum_adv_mrd + sum_adv_mpd) / denom:.6f} "
-            f"avg_fm={(sum_fm_mrd + sum_fm_mpd) / denom:.6f} "
-            f"avg_adv_mrd={sum_adv_mrd / denom:.6f} "
-            f"avg_adv_mpd={sum_adv_mpd / denom:.6f} "
-            f"avg_fm_mrd={sum_fm_mrd / denom:.6f} "
-            f"avg_fm_mpd={sum_fm_mpd / denom:.6f}"
+        progress.set_postfix(
+            mrd_d=f"{mrd_d_val:.4f}",
+            mpd_d=f"{mpd_d_val:.4f}",
+            g=f"{g_val:.4f}",
+            recon=f"{metrics['recon']:.4f}",
+            adv=f"{metrics['adv']:.4f}",
+            fm=f"{metrics['fm']:.4f}",
+            lr=f"{lr:.3g}",
         )
+
+        if (step == 0) or ((step + 1) % log_every == 0) or (step + 1 == steps):
+            denom = max(window_count, 1)
+            print(
+                f"step {step + 1}/{steps} "
+                f"avg_mrd_d={window_mrd_d / denom:.6f} "
+                f"avg_mpd_d={window_mpd_d / denom:.6f} "
+                f"avg_g={window_g / denom:.6f} "
+                f"avg_recon={window_recon / denom:.6f} "
+                f"avg_adv={(window_adv_mrd + window_adv_mpd) / denom:.6f} "
+                f"avg_fm={(window_fm_mrd + window_fm_mpd) / denom:.6f} "
+                f"lr={last_lr:.6g}"
+            )
+            window_mrd_d = 0.0
+            window_mpd_d = 0.0
+            window_g = 0.0
+            window_recon = 0.0
+            window_adv_mrd = 0.0
+            window_adv_mpd = 0.0
+            window_fm_mrd = 0.0
+            window_fm_mpd = 0.0
+            window_count = 0
+
+        if save_every > 0 and (step + 1) % save_every == 0:
+            save_full_reconstruction(
+                dataset=dataset,
+                model=ae,
+                mel_cfg=mel_cfg,
+                sample_rate=sample_rate,
+                out_dir=Path("output") / f"step_{step + 1}",
+                sample_index=0,
+                chunk_frames=256,
+                overlap_frames=32,
+            )
+
+    denom = max(num_steps, 1)
+    print(
+        f"done steps={steps} "
+        f"avg_mrd_d={sum_mrd_d / denom:.6f} "
+        f"avg_mpd_d={sum_mpd_d / denom:.6f} "
+        f"avg_g={sum_g / denom:.6f} "
+        f"avg_recon={sum_recon / denom:.6f} "
+        f"avg_adv={(sum_adv_mrd + sum_adv_mpd) / denom:.6f} "
+        f"avg_fm={(sum_fm_mrd + sum_fm_mpd) / denom:.6f} "
+        f"lr={last_lr:.6g}"
+    )
+
+    save_full_reconstruction(
+        dataset=dataset,
+        model=ae,
+        mel_cfg=mel_cfg,
+        sample_rate=sample_rate,
+        out_dir=Path("output") / "final",
+        sample_index=0,
+        chunk_frames=256,
+        overlap_frames=32,
+    )
+
+
+def main() -> None:
+    args = _parse_args()
+    run_train(args)
 
 
 if __name__ == "__main__":

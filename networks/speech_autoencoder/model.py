@@ -83,6 +83,7 @@ class Decoder(nn.Module):
         x = self.linear(x)
         bsz, seq_len, feat = x.shape
         waveform = mx.reshape(x, (bsz, seq_len * feat, 1))
+        waveform = mx.tanh(waveform)
         return waveform
 
 
