@@ -1,5 +1,3 @@
-import math
-
 import mlx.core as mx
 import mlx.nn as nn
 
@@ -224,136 +222,22 @@ def feature_matching_loss(
     return mx.mean(mx.stack(losses)) if losses else mx.array(0.0, dtype=mx.float32)
 
 
-def _generate_and_align(
-    model: SpeechAutoEncoder,
-    mel: mx.array,
-    target_waveform: mx.array | None = None,
-) -> tuple[mx.array, mx.array | None]:
-    generated = model(mel)
-    if target_waveform is None:
-        return generated, None
-    if target_waveform.shape[1] != generated.shape[1]:
-        raise ValueError(
-            f"Waveform length mismatch: target={target_waveform.shape} generated={generated.shape}"
-        )
-    return generated, target_waveform
-
-
-def generator_reconstruction_loss(
-    model: SpeechAutoEncoder,
-    mel: mx.array,
-    target_waveform: mx.array,
-) -> mx.array:
-    generated, target = _generate_and_align(model, mel, target_waveform)
-    assert target is not None
-    return reconstruction_loss(generated, target)
-
-
-def generator_adversarial_loss(
-    model: SpeechAutoEncoder,
-    mel: mx.array,
-    *,
-    mrd: MRD,
-    mpd: MPD,
-    adv_kind: str = "hinge",
-) -> mx.array:
-    generated, _ = _generate_and_align(model, mel, None)
-    return adversarial_loss(mrd(generated), kind=adv_kind) + adversarial_loss(
-        mpd(generated), kind=adv_kind
-    )
-
-
-def generator_feature_matching_loss(
-    model: SpeechAutoEncoder,
-    mel: mx.array,
-    target_waveform: mx.array,
-    *,
-    mrd: MRD,
-    mpd: MPD,
-) -> mx.array:
-    generated, target = _generate_and_align(model, mel, target_waveform)
-    assert target is not None
-
-    mrd_fake = mrd(generated)
-    mpd_fake = mpd(generated)
-    mrd_real = mrd(target)
-    mpd_real = mpd(target)
-
-    return feature_matching_loss(mrd_real, mrd_fake) + feature_matching_loss(mpd_real, mpd_fake)
-
-
-def generator_total_loss(
-    model: SpeechAutoEncoder,
-    mel: mx.array,
-    target_waveform: mx.array,
-    *,
-    mrd: MRD,
-    mpd: MPD,
-    lambda_recon: float = 1.0,
-    lambda_adv: float = 1.0,
-    lambda_fm: float = 1.0,
-    adv_kind: str = "hinge",
-) -> mx.array:
-    """LG = λrecon Lrecon + λadv Ladv + λfm Lfm."""
-    generated, target = _generate_and_align(model, mel, target_waveform)
-    assert target is not None
-
-    l_recon = reconstruction_loss(generated, target)
-
-    mrd_fake = mrd(generated)
-    mpd_fake = mpd(generated)
-    l_adv = adversarial_loss(mrd_fake, kind=adv_kind) + adversarial_loss(mpd_fake, kind=adv_kind)
-
-    mrd_real = mrd(target)
-    mpd_real = mpd(target)
-    l_fm = feature_matching_loss(mrd_real, mrd_fake) + feature_matching_loss(mpd_real, mpd_fake)
-
-    return lambda_recon * l_recon + lambda_adv * l_adv + lambda_fm * l_fm
-
-
-def _discriminator_total_loss(
-    disc_model,
-    real_waveform: mx.array,
-    fake_waveform: mx.array,
-    *,
-    adv_kind: str = "hinge",
-) -> mx.array:
+def mrd_loss_fn(model: MRD, real_waveform: mx.array, fake_waveform: mx.array) -> mx.array:
     if real_waveform.shape[1] != fake_waveform.shape[1]:
         raise ValueError(
             f"Waveform length mismatch: real={real_waveform.shape} fake={fake_waveform.shape}"
         )
     fake = mx.stop_gradient(fake_waveform)
-    return discriminator_adversarial_loss(
-        disc_model(real_waveform), disc_model(fake), kind=adv_kind
-    )
-
-
-def mrd_discriminator_loss(
-    model: MRD,
-    real_waveform: mx.array,
-    fake_waveform: mx.array,
-    *,
-    adv_kind: str = "hinge",
-) -> mx.array:
-    return _discriminator_total_loss(model, real_waveform, fake_waveform, adv_kind=adv_kind)
-
-
-def mpd_discriminator_loss(
-    model: MPD,
-    real_waveform: mx.array,
-    fake_waveform: mx.array,
-    *,
-    adv_kind: str = "hinge",
-) -> mx.array:
-    return _discriminator_total_loss(model, real_waveform, fake_waveform, adv_kind=adv_kind)
-
-
-def mrd_loss_fn(model: MRD, real_waveform: mx.array, fake_waveform: mx.array) -> mx.array:
-    return mrd_discriminator_loss(model, real_waveform, fake_waveform, adv_kind=ADV_KIND)
+    return discriminator_adversarial_loss(model(real_waveform), model(fake), kind=ADV_KIND)
 
 
 def mpd_loss_fn(model: MPD, real_waveform: mx.array, fake_waveform: mx.array) -> mx.array:
-    return mpd_discriminator_loss(model, real_waveform, fake_waveform, adv_kind=ADV_KIND)
+    if real_waveform.shape[1] != fake_waveform.shape[1]:
+        raise ValueError(
+            f"Waveform length mismatch: real={real_waveform.shape} fake={fake_waveform.shape}"
+        )
+    fake = mx.stop_gradient(fake_waveform)
+    return discriminator_adversarial_loss(model(real_waveform), model(fake), kind=ADV_KIND)
 
 
 def loss_fn(
@@ -363,14 +247,20 @@ def loss_fn(
     mel: mx.array,
     waveform: mx.array,
 ) -> mx.array:
-    return generator_total_loss(
-        autoencoder,
-        mel,
-        waveform,
-        mrd=mrd,
-        mpd=mpd,
-        lambda_recon=LAMBDA_RECON,
-        lambda_adv=LAMBDA_ADV,
-        lambda_fm=LAMBDA_FM,
-        adv_kind=ADV_KIND,
-    )
+    generated = autoencoder(mel)
+    if waveform.shape[1] != generated.shape[1]:
+        raise ValueError(
+            f"Waveform length mismatch: target={waveform.shape} generated={generated.shape}"
+        )
+
+    l_recon = reconstruction_loss(generated, waveform)
+
+    mrd_fake = mrd(generated)
+    mpd_fake = mpd(generated)
+    l_adv = adversarial_loss(mrd_fake, kind=ADV_KIND) + adversarial_loss(mpd_fake, kind=ADV_KIND)
+
+    mrd_real = mrd(waveform)
+    mpd_real = mpd(waveform)
+    l_fm = feature_matching_loss(mrd_real, mrd_fake) + feature_matching_loss(mpd_real, mpd_fake)
+
+    return LAMBDA_RECON * l_recon + LAMBDA_ADV * l_adv + LAMBDA_FM * l_fm
