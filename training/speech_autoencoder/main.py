@@ -67,7 +67,7 @@ def _compute_learning_rate(
         return base_lr + (min_lr - base_lr) * frac
     if schedule == "exponential":
         if min_lr == 0.0:
-            return base_lr * (0.1 ** frac)
+            return base_lr * (0.1**frac)
         return base_lr * math.exp(math.log(min_lr / base_lr) * frac)
 
     raise ValueError(f"Unknown lr schedule: {schedule}")
@@ -160,7 +160,7 @@ def train_step(
     return metrics
 
 
-def _pad_or_crop_1d(waveform, target_len: int, *, rng: random.Random) -> object:
+def pad_or_crop_1d(waveform, target_len: int, *, rng: random.Random) -> object:
     if waveform.shape[0] == target_len:
         return waveform
     if waveform.shape[0] < target_len:
@@ -210,8 +210,10 @@ def dataloader(
         samples = dataset[start : start + batch_size]
         for sample in samples:
             wav, _sr = sample.load_waveform(target_sr=sample_rate, as_mx=False)
-            aligned_len = max(int(math.ceil(target_len / out_dims_val) * out_dims_val), out_dims_val)
-            wav = _pad_or_crop_1d(wav, aligned_len, rng=rng)
+            aligned_len = max(
+                int(math.ceil(target_len / out_dims_val) * out_dims_val), out_dims_val
+            )
+            wav = pad_or_crop_1d(wav, aligned_len, rng=rng)
             mel = encoder.encode(wav, log_mel=log_mel, as_mx=False)
             if int(mel.shape[0]) * out_dims_val != wav.shape[0]:
                 raise ValueError(
@@ -275,7 +277,7 @@ def random_dataloader(
         for idx in indices:
             sample = dataset[int(idx)]
             wav, _sr = sample.load_waveform(target_sr=sample_rate, as_mx=False)
-            wav = _pad_or_crop_1d(wav, aligned_len, rng=rng)
+            wav = pad_or_crop_1d(wav, aligned_len, rng=rng)
             mel = encoder.encode(wav, log_mel=log_mel, as_mx=False)
             if int(mel.shape[0]) * out_dims_val != wav.shape[0]:
                 raise ValueError(
@@ -299,9 +301,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--dataset-dir",
         type=Path,
-        default=Path(__file__).resolve().parents[2]
-        / "data"
-        / "sps-corpus-1.0-2025-11-25-en",
+        default=Path(__file__).resolve().parents[2] / "data" / "sps-corpus-1.0-2025-11-25-en",
     )
     parser.add_argument("--sample-rate", type=int, default=32_000)
     parser.add_argument("--segment-seconds", type=float, default=0.19)
