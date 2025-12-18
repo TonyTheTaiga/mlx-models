@@ -9,7 +9,7 @@ from training.speech_autoencoder.utils import ensure_waveform_2d, hann_window
 LAMBDA_RECON = 45.0
 LAMBDA_ADV = 1.0
 LAMBDA_FM = 0.1
-ADV_KIND = "hinge"  # "hinge" | "lsgan" | "ls"
+ADV_KIND = "ls"  # "hinge" | "lsgan" | "ls"
 
 
 def frame_signal_1d(x: mx.array, frame_length: int, hop_length: int) -> mx.array:
@@ -38,7 +38,6 @@ def frame_signal_1d(x: mx.array, frame_length: int, hop_length: int) -> mx.array
 
 def stft_magnitude(
     waveform: mx.array,
-    *,
     fft_size: int,
     hop_length: int,
     win_length: int,
@@ -65,7 +64,6 @@ def stft_magnitude(
 
 def mel_from_stft_mag(
     mag: mx.array,
-    *,
     fft_size: int,
     sample_rate: int,
     n_mels: int,
@@ -93,19 +91,38 @@ def mel_from_stft_mag(
     return mel
 
 
+def ensure_logits(outputs: object, arg_name: str) -> list[mx.array]:
+    if isinstance(outputs, mx.array):
+        return [outputs]
+    if isinstance(outputs, list):
+        logits: list[mx.array] = []
+        for idx, item in enumerate(outputs):
+            if not isinstance(item, dict) or "logits" not in item:
+                raise TypeError(f"{arg_name}[{idx}] must be a dict with a 'logits' key")
+            logits.append(item["logits"])  # type: ignore[index]
+        return logits
+    raise TypeError(f"{arg_name} must be an mx.array or list[dict]")
+
+
 def reconstruction_loss(
     generated_waveform: mx.array,
     target_waveform: mx.array,
-    *,
-    fft_sizes: tuple[int, ...] = (512, 1024, 2048),
+    fft_sizes: tuple[int, ...] = (768, 1536, 3072),
     sample_rate: int = 32_000,
-    n_mels: int = 228,
+    n_mels: tuple[int, ...] | int = (64, 128, 128),
     f_min: float = 0.0,
     f_max: float | None = None,
     log_mel: bool = True,
 ) -> mx.array:
     losses: list[mx.array] = []
-    for fft_size in fft_sizes:
+    if isinstance(n_mels, int):
+        n_mels_per_fft = [n_mels] * len(fft_sizes)
+    else:
+        if len(n_mels) != len(fft_sizes):
+            raise ValueError("n_mels must match fft_sizes in length")
+        n_mels_per_fft = n_mels
+
+    for fft_size, n_mel in zip(fft_sizes, n_mels_per_fft, strict=True):
         hop = max(fft_size // 4, 1)
         mag_gen = stft_magnitude(
             generated_waveform,
@@ -125,7 +142,7 @@ def reconstruction_loss(
             mag_gen,
             fft_size=fft_size,
             sample_rate=sample_rate,
-            n_mels=n_mels,
+            n_mels=n_mel,
             f_min=f_min,
             f_max=f_max,
             log_mel=log_mel,
@@ -134,43 +151,23 @@ def reconstruction_loss(
             mag_tgt,
             fft_size=fft_size,
             sample_rate=sample_rate,
-            n_mels=n_mels,
+            n_mels=n_mel,
             f_min=f_min,
             f_max=f_max,
             log_mel=log_mel,
         )
         losses.append(mx.mean(mx.abs(mel_gen - mel_tgt)))
+
     return mx.mean(mx.stack(losses))
-
-
-def _disc_items(outputs: object) -> list[dict[str, object]]:
-    if isinstance(outputs, mx.array):
-        return [{"logits": outputs}]
-    if isinstance(outputs, list):
-        if not all(isinstance(x, dict) and "logits" in x for x in outputs):
-            raise TypeError("Expected list[dict] discriminator outputs with a 'logits' key")
-        return outputs
-    raise TypeError("Expected discriminator outputs as an mx.array or list[dict]")
-
-
-def _disc_logits(outputs: object) -> list[mx.array]:
-    items = _disc_items(outputs)
-    return [d["logits"] for d in items]  # type: ignore[index]
 
 
 def discriminator_adversarial_loss(
     real_outputs: object,
     fake_outputs: object,
-    *,
     kind: str = "hinge",
 ) -> mx.array:
-    real_logits = _disc_logits(real_outputs)
-    fake_logits = _disc_logits(fake_outputs)
-
-    if len(real_logits) != len(fake_logits):
-        raise ValueError(
-            "real_outputs and fake_outputs must have the same number of sub-discriminators"
-        )
+    real_logits = ensure_logits(real_outputs, "real_outputs")
+    fake_logits = ensure_logits(fake_outputs, "fake_outputs")
 
     losses: list[mx.array] = []
     for real, fake in zip(real_logits, fake_logits, strict=True):
@@ -183,8 +180,8 @@ def discriminator_adversarial_loss(
     return mx.mean(mx.stack(losses))
 
 
-def adversarial_loss(fake_outputs: object, *, kind: str = "hinge") -> mx.array:
-    fake_logits = _disc_logits(fake_outputs)
+def adversarial_loss(fake_outputs: object, kind: str = "hinge") -> mx.array:
+    fake_logits = ensure_logits(fake_outputs, "fake_outputs")
 
     losses: list[mx.array] = []
     for fake in fake_logits:
@@ -201,11 +198,6 @@ def feature_matching_loss(
     real_outputs: list[dict[str, object]],
     fake_outputs: list[dict[str, object]],
 ) -> mx.array:
-    if len(real_outputs) != len(fake_outputs):
-        raise ValueError(
-            "real_outputs and fake_outputs must have the same number of sub-discriminators"
-        )
-
     losses: list[mx.array] = []
     for real, fake in zip(real_outputs, fake_outputs, strict=True):
         real_feats = real.get("features")
@@ -213,8 +205,6 @@ def feature_matching_loss(
 
         if not isinstance(real_feats, list) or not isinstance(fake_feats, list):
             raise TypeError("Expected 'features' to be a list[mx.array] in discriminator outputs")
-        if len(real_feats) != len(fake_feats):
-            raise ValueError("Feature lists must match between real and fake outputs")
 
         for r, f in zip(real_feats, fake_feats, strict=True):
             losses.append(mx.mean(mx.abs(r - f)))
@@ -223,44 +213,39 @@ def feature_matching_loss(
 
 
 def mrd_loss_fn(model: MRD, real_waveform: mx.array, fake_waveform: mx.array) -> mx.array:
-    if real_waveform.shape[1] != fake_waveform.shape[1]:
-        raise ValueError(
-            f"Waveform length mismatch: real={real_waveform.shape} fake={fake_waveform.shape}"
-        )
     fake = mx.stop_gradient(fake_waveform)
     return discriminator_adversarial_loss(model(real_waveform), model(fake), kind=ADV_KIND)
 
 
 def mpd_loss_fn(model: MPD, real_waveform: mx.array, fake_waveform: mx.array) -> mx.array:
-    if real_waveform.shape[1] != fake_waveform.shape[1]:
-        raise ValueError(
-            f"Waveform length mismatch: real={real_waveform.shape} fake={fake_waveform.shape}"
-        )
     fake = mx.stop_gradient(fake_waveform)
     return discriminator_adversarial_loss(model(real_waveform), model(fake), kind=ADV_KIND)
 
 
-def loss_fn(
+def g_loss_fn(
     autoencoder: SpeechAutoEncoder,
     mrd: MRD,
     mpd: MPD,
     mel: mx.array,
     waveform: mx.array,
-) -> mx.array:
+) -> tuple[mx.array, dict]:
     generated = autoencoder(mel)
-    if waveform.shape[1] != generated.shape[1]:
-        raise ValueError(
-            f"Waveform length mismatch: target={waveform.shape} generated={generated.shape}"
-        )
-
     l_recon = reconstruction_loss(generated, waveform)
 
     mrd_fake = mrd(generated)
     mpd_fake = mpd(generated)
-    l_adv = adversarial_loss(mrd_fake, kind=ADV_KIND) + adversarial_loss(mpd_fake, kind=ADV_KIND)
+    l_adv = 0.5 * (
+        adversarial_loss(mrd_fake, kind=ADV_KIND) + adversarial_loss(mpd_fake, kind=ADV_KIND)
+    )
 
     mrd_real = mrd(waveform)
     mpd_real = mpd(waveform)
-    l_fm = feature_matching_loss(mrd_real, mrd_fake) + feature_matching_loss(mpd_real, mpd_fake)
+    l_fm = 0.5 * (
+        feature_matching_loss(mrd_real, mrd_fake) + feature_matching_loss(mpd_real, mpd_fake)
+    )
 
-    return LAMBDA_RECON * l_recon + LAMBDA_ADV * l_adv + LAMBDA_FM * l_fm
+    return LAMBDA_RECON * l_recon + LAMBDA_ADV * l_adv + LAMBDA_FM * l_fm, {
+        "reconstruction_loss": l_recon,
+        "adversarial_loss": l_adv,
+        "feature_matching_loss": l_fm,
+    }

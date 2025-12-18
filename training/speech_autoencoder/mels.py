@@ -221,7 +221,6 @@ class MelSpectrogramEncoder:
     def encode(
         self,
         waveform: Sequence[float] | np.ndarray,
-        *,
         log_mel: bool = True,
         pad_mode: str | None = "reflect",
         as_mx: bool = False,
@@ -267,7 +266,6 @@ class MelSpectrogramDecoder:
     def decode(
         self,
         mel_spectrogram: Sequence[Sequence[float]] | np.ndarray,
-        *,
         log_mel: bool = True,
         as_mx: bool = False,
     ):

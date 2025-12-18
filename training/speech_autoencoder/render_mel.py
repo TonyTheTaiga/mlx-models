@@ -33,7 +33,6 @@ COLORMAPS = {
 
 def normalize_mel_image(
     mel: np.ndarray,
-    *,
     log_input: bool,
     db_range: float,
 ) -> np.ndarray:
@@ -59,7 +58,6 @@ def save_mel_image(
     audio_path: Path,
     output_dir: Path,
     encoder: MelSpectrogramEncoder,
-    *,
     log_mel: bool,
     db_range: float,
     colormap: str,
@@ -89,7 +87,6 @@ def save_waveform(
     output_path: Path,
     waveform: np.ndarray,
     sample_rate: int,
-    *,
     overwrite: bool,
 ) -> Path:
     output_path.parent.mkdir(parents=True, exist_ok=True)

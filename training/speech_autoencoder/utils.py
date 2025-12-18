@@ -26,14 +26,14 @@ def ensure_waveform_2d(waveform: mx.array) -> mx.array:
     return waveform.astype(mx.float32)
 
 
-def hann_window(length: int, *, dtype: mx.Dtype = mx.float32) -> mx.array:
+def hann_window(length: int, dtype: mx.Dtype = mx.float32) -> mx.array:
     if length <= 1:
         return mx.ones((length,), dtype=dtype)
     n = mx.arange(length, dtype=dtype)
     return 0.5 - 0.5 * mx.cos((2.0 * mx.array(math.pi, dtype=dtype) * n) / (length - 1))
 
 
-def reflect_pad_1d(x: mx.array, pad_left: int, pad_right: int, *, axis: int = -1) -> mx.array:
+def reflect_pad_1d(x: mx.array, pad_left: int, pad_right: int, axis: int = -1) -> mx.array:
     if pad_left < 0 or pad_right < 0:
         raise ValueError("pad_left and pad_right must be non-negative")
     if pad_left == 0 and pad_right == 0:
@@ -91,7 +91,6 @@ def peak_normalize(audio: np.ndarray, peak: float = 0.95) -> np.ndarray:
 def reconstruct_mel_in_chunks(
     model: "SpeechAutoEncoder",
     mel: mx.array,
-    *,
     out_dims: int,
     chunk_frames: int = 256,
     overlap_frames: int = 32,
@@ -131,7 +130,6 @@ def reconstruct_mel_in_chunks(
 
 
 def save_full_reconstruction(
-    *,
     dataset: "SpsCorpusDataset",
     model: "SpeechAutoEncoder",
     mel_cfg: "MelSpectrogramConfig",
