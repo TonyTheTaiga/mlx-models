@@ -25,8 +25,8 @@ dynamic = ["version"]
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["networks*"]
-exclude = ["tests*", "tools*"]
+include = ["networks", "training"]
+exclude = ["tests", "tools"]
 
 [tool.ruff]
 line-length = 100

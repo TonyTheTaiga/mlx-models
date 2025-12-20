@@ -37,14 +37,18 @@ def ssim_map(x: mx.array, y: mx.array, max_val: float = 1.0, window_size: int = 
     c2 = (k2 * max_val) * (k2 * max_val)
     xb = x32[None, ...]
     yb = y32[None, ...]
-    mu_x = gaussian_blur_2d(xb, size=window_size)[0]
-    mu_y = gaussian_blur_2d(yb, size=window_size)[0]
+    blurred = gaussian_blur_2d(
+        mx.concatenate([xb, yb, xb * xb, yb * yb, xb * yb], axis=0),
+        size=window_size,
+    )
+    mu_x = blurred[0]
+    mu_y = blurred[1]
     mu_x2 = mu_x * mu_x
     mu_y2 = mu_y * mu_y
     mu_xy = mu_x * mu_y
-    sigma_x2 = gaussian_blur_2d(xb * xb, size=window_size)[0] - mu_x2
-    sigma_y2 = gaussian_blur_2d(yb * yb, size=window_size)[0] - mu_y2
-    sigma_xy = gaussian_blur_2d(xb * yb, size=window_size)[0] - mu_xy
+    sigma_x2 = blurred[2] - mu_x2
+    sigma_y2 = blurred[3] - mu_y2
+    sigma_xy = blurred[4] - mu_xy
     num = (2.0 * mu_xy + c1) * (2.0 * sigma_xy + c2)
     den = (mu_x2 + mu_y2 + c1) * (sigma_x2 + sigma_y2 + c2)
     ssim = num / den

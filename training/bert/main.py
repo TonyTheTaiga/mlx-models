@@ -209,8 +209,6 @@ def count_total_sequences(
     max_sequences: int | None = None,
 ) -> int:
     if max_sequences is not None:
-        # If we have a hard limit, we can just return that (or check if file is smaller, but that's slow)
-        # For speed, let's just return the limit. The training loop handles the case where data runs out early.
         return max_sequences
 
     total_tokens = 0
