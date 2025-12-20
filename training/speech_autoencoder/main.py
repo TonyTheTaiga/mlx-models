@@ -8,12 +8,8 @@ import mlx.core as mx
 import mlx.nn as nn
 import mlx.optimizers as optim
 import numpy as np
-from mlx.utils import tree_flatten
+from tabulate import tabulate as _tabulate
 from tqdm import tqdm
-try:
-    from tabulate import tabulate as _tabulate
-except ImportError:  # pragma: no cover
-    _tabulate = None
 
 from networks.speech_autoencoder.model import SpeechAutoEncoder
 from training.speech_autoencoder.dataset import SpsCorpusDataset
@@ -30,13 +26,9 @@ from training.speech_autoencoder.utils import save_full_reconstruction
 def save_weights(out_dir: Path, ae: SpeechAutoEncoder, mrd: MRD, mpd: MPD) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
     mx.eval(ae.parameters(), mrd.parameters(), mpd.parameters())
-
-    arrays: dict[str, np.ndarray] = {}
-    for prefix, module in (("ae", ae), ("mrd", mrd), ("mpd", mpd)):
-        for key, value in tree_flatten(module.parameters()):
-            arrays[f"{prefix}.{key}"] = np.asarray(value)
-
-    np.savez(out_dir / "weights.npz", **arrays)
+    ae.save_weights(str(out_dir / "ae_weights.npz"))
+    mrd.save_weights(str(out_dir / "mrd_weights.npz"))
+    mpd.save_weights(str(out_dir / "mpd_weights.npz"))
 
 
 def compute_learning_rate(
@@ -197,7 +189,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--sample-rate", type=int, default=32_000)
     parser.add_argument("--segment-seconds", type=float, default=0.19)
-    parser.add_argument("--batch-size", type=int, default=8)
+    parser.add_argument("--batch-size", type=int, default=16)
     parser.add_argument("--steps", type=int, default=50_000, help="Number of training steps.")
     parser.add_argument("--learning-rate", type=float, default=1e-4, help="Base learning rate.")
     parser.add_argument(
@@ -319,11 +311,11 @@ def run_train(args: argparse.Namespace) -> None:
         batch = next(loader)
         mel = batch["mel"]
         real_waveform = batch["waveform"]
-        fake_waveform = ae(mel)
+        (g_loss_value, loss_dict), g_grads = g_loss_and_grad_fn(ae, mrd, mpd, mel, real_waveform)
+        fake_waveform = mx.stop_gradient(loss_dict["generated"])
 
         mrd_d_loss, mrd_grads = mrd_loss_and_grad_fn(mrd, real_waveform, fake_waveform)
         mpd_d_loss, mpd_grads = mpd_loss_and_grad_fn(mpd, real_waveform, fake_waveform)
-        (g_loss_value, loss_dict), g_grads = g_loss_and_grad_fn(ae, mrd, mpd, mel, real_waveform)
 
         metrics = {
             "mrd_d": float(mrd_d_loss.item()),
@@ -375,16 +367,18 @@ def run_train(args: argparse.Namespace) -> None:
             logger.reset_window()
 
         if save_every > 0 and (step + 1) % save_every == 0:
+            out_dir = Path("output") / f"step_{step + 1}"
             save_full_reconstruction(
                 dataset=dataset,
                 model=ae,
                 mel_cfg=mel_cfg,
                 sample_rate=sample_rate,
-                out_dir=Path("output") / f"step_{step + 1}",
+                out_dir=out_dir,
                 sample_index=0,
                 chunk_frames=256,
                 overlap_frames=32,
             )
+            save_weights(out_dir=out_dir, ae=ae, mrd=mrd, mpd=mpd)
 
     total_means = logger.total_mean()
     summary_rows = [

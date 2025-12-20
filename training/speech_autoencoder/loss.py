@@ -174,7 +174,7 @@ def discriminator_adversarial_loss(
         if kind == "hinge":
             losses.append(mx.mean(nn.relu(1.0 - real)) + mx.mean(nn.relu(1.0 + fake)))
         elif kind in {"lsgan", "ls"}:
-            losses.append(mx.mean((real - 1.0) ** 2) + mx.mean(fake**2))
+            losses.append(mx.mean((real - 1.0) ** 2) + mx.mean((fake + 1.0) ** 2))
         else:
             raise ValueError(f"Unknown adversarial loss kind: {kind}")
     return mx.mean(mx.stack(losses))
@@ -245,6 +245,7 @@ def g_loss_fn(
     )
 
     return LAMBDA_RECON * l_recon + LAMBDA_ADV * l_adv + LAMBDA_FM * l_fm, {
+        "generated": generated,
         "reconstruction_loss": l_recon,
         "adversarial_loss": l_adv,
         "feature_matching_loss": l_fm,

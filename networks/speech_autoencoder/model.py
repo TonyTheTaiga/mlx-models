@@ -61,23 +61,23 @@ class Decoder(nn.Module):
     def __init__(self, in_dims: int, out_dims: int):
         super().__init__()
         self.conv1 = CausalConv1d(in_channels=in_dims, out_channels=512, kernel_size=7)
-        self.bn1 = nn.BatchNorm(512)
+        # self.bn1 = nn.BatchNorm(512)
         self.convnext_blocks = nn.Sequential(
             *[
                 CausalConvNeXtBlock(dim=512, expansion=4, kernel_size=7, dilation=dilation)
                 for dilation in [1, 2, 4, 1, 2, 4, 1, 1, 1, 1]
             ]
         )
-        self.bn2 = nn.BatchNorm(512)
+        # self.bn2 = nn.BatchNorm(512)
         self.conv2 = CausalConv1d(in_channels=512, out_channels=2048, kernel_size=3)
         self.act = nn.PReLU()
         self.linear = nn.Linear(input_dims=2048, output_dims=out_dims)
 
     def __call__(self, x: mx.array) -> mx.array:
         x = self.conv1(x)
-        x = self.bn1(x)
+        # x = self.bn1(x)
         x = self.convnext_blocks(x)
-        x = self.bn2(x)
+        # x = self.bn2(x)
         x = self.conv2(x)
         x = self.act(x)
         x = self.linear(x)

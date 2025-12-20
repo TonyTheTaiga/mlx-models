@@ -199,7 +199,7 @@ def save_full_reconstruction(
 if __name__ == "__main__":
     rng = np.random.default_rng(0)
 
-    def _check(shape, pad_left, pad_right, axis):
+    def check(shape, pad_left, pad_right, axis):
         x_np = rng.normal(size=shape).astype(np.float32)
         x_mx = mx.array(x_np)
 
@@ -215,10 +215,10 @@ if __name__ == "__main__":
             f"mismatch shape={shape} axis={axis} pad=({pad_left},{pad_right}) max_abs={max_abs}"
         )
 
-    _check((10,), 3, 4, -1)
-    _check((2,), 1, 1, -1)
-    _check((3, 10), 4, 2, -1)
-    _check((10, 3), 2, 5, 0)
-    _check((2, 13, 1), 7, 3, 1)
+    check((10,), 3, 4, -1)
+    check((2,), 1, 1, -1)
+    check((3, 10), 4, 2, -1)
+    check((10, 3), 2, 5, 0)
+    check((2, 13, 1), 7, 3, 1)
 
     print("reflect_pad_1d smoke tests passed")

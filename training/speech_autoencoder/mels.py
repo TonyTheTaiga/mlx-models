@@ -40,20 +40,20 @@ class MelSpectrogramConfig:
             raise ValueError("power must be positive")
 
 
-def _hz_to_mel(freq: np.ndarray | float) -> np.ndarray | float:
+def hz_to_mel(freq: np.ndarray | float) -> np.ndarray | float:
     return 2595.0 * np.log10(1.0 + np.asarray(freq) / 700.0)
 
 
-def _mel_to_hz(mels: np.ndarray | float) -> np.ndarray | float:
+def mel_to_hz(mels: np.ndarray | float) -> np.ndarray | float:
     return 700.0 * (10.0 ** (np.asarray(mels) / 2595.0) - 1.0)
 
 
-def _build_mel_filter(config: MelSpectrogramConfig) -> np.ndarray:
+def build_mel_filter(config: MelSpectrogramConfig) -> np.ndarray:
     freq_bins = config.n_fft // 2 + 1
-    mel_min = _hz_to_mel(config.f_min)
-    mel_max = _hz_to_mel(config.f_max)
+    mel_min = hz_to_mel(config.f_min)
+    mel_max = hz_to_mel(config.f_max)
     mel_points = np.linspace(mel_min, mel_max, config.n_mels + 2, dtype=np.float32)
-    hz_points = _mel_to_hz(mel_points)
+    hz_points = mel_to_hz(mel_points)
     bin_indices = np.floor((config.n_fft + 1) * hz_points / config.sample_rate).astype(int)
     filter_bank = np.zeros((config.n_mels, freq_bins), dtype=np.float32)
 
@@ -84,7 +84,7 @@ def _build_mel_filter(config: MelSpectrogramConfig) -> np.ndarray:
     return filter_bank
 
 
-def _ensure_numpy(array: Sequence[float] | np.ndarray) -> np.ndarray:
+def ensure_numpy(array: Sequence[float] | np.ndarray) -> np.ndarray:
     if isinstance(array, np.ndarray):
         return array
     if hasattr(array, "numpy"):
@@ -92,14 +92,14 @@ def _ensure_numpy(array: Sequence[float] | np.ndarray) -> np.ndarray:
     return np.asarray(array)
 
 
-def _prepare_signal(samples: Sequence[float] | np.ndarray) -> np.ndarray:
-    audio = _ensure_numpy(samples).astype(np.float32).flatten()
+def prepare_signal(samples: Sequence[float] | np.ndarray) -> np.ndarray:
+    audio = ensure_numpy(samples).astype(np.float32).flatten()
     if audio.size == 0:
         raise ValueError("waveform must contain at least one sample")
     return np.ascontiguousarray(audio)
 
 
-def _pad_signal(
+def pad_signal(
     signal: np.ndarray,
     frame_length: int,
     hop_length: int,
@@ -123,13 +123,13 @@ def _pad_signal(
     return signal
 
 
-def _frame_signal(
+def frame_signal(
     signal: np.ndarray,
     frame_length: int,
     hop_length: int,
     target_num_frames: int | None,
 ) -> np.ndarray:
-    padded = _pad_signal(signal, frame_length, hop_length, target_num_frames)
+    padded = pad_signal(signal, frame_length, hop_length, target_num_frames)
     if padded.size < frame_length:
         padded = np.pad(padded, (0, frame_length - padded.size), mode="constant")
     num_frames = (
@@ -143,20 +143,20 @@ def _frame_signal(
     return np.array(frames, copy=True)
 
 
-def _stft(
+def stft(
     audio: np.ndarray,
     config: MelSpectrogramConfig,
     window: np.ndarray,
     target_num_frames: int | None = None,
 ) -> np.ndarray:
-    frames = _frame_signal(audio, config.win_length, config.hop_length, target_num_frames)
+    frames = frame_signal(audio, config.win_length, config.hop_length, target_num_frames)
     frames *= window
     if config.win_length < config.n_fft:
         frames = np.pad(frames, ((0, 0), (0, config.n_fft - config.win_length)))
     return np.fft.rfft(frames, n=config.n_fft, axis=-1)
 
 
-def _istft(stft_matrix: np.ndarray, config: MelSpectrogramConfig, window: np.ndarray) -> np.ndarray:
+def istft(stft_matrix: np.ndarray, config: MelSpectrogramConfig, window: np.ndarray) -> np.ndarray:
     frames = np.fft.irfft(stft_matrix, n=config.n_fft, axis=-1)
     frames = frames[:, : config.win_length]
     frames *= window
@@ -178,7 +178,7 @@ def _istft(stft_matrix: np.ndarray, config: MelSpectrogramConfig, window: np.nda
     return signal
 
 
-def _griffin_lim(
+def griffin_lim(
     magnitude: np.ndarray,
     config: MelSpectrogramConfig,
     window: np.ndarray,
@@ -189,8 +189,8 @@ def _griffin_lim(
     complex_spec = magnitude * phases
 
     for _ in range(max(iterations, 1)):
-        waveform = _istft(complex_spec, config, window)
-        stft_matrix = _stft(
+        waveform = istft(complex_spec, config, window)
+        stft_matrix = stft(
             waveform,
             config,
             window,
@@ -199,7 +199,7 @@ def _griffin_lim(
         angles = np.exp(1j * np.angle(stft_matrix))
         complex_spec = magnitude * angles
 
-    return _istft(complex_spec, config, window)
+    return istft(complex_spec, config, window)
 
 
 class MelSpectrogramEncoder:
@@ -208,7 +208,7 @@ class MelSpectrogramEncoder:
         self._window = np.hanning(self.config.win_length).astype(np.float32)
         if np.allclose(self._window.sum(), 0.0):
             self._window[:] = 1.0
-        self._mel_filter = _build_mel_filter(self.config)
+        self._mel_filter = build_mel_filter(self.config)
 
     @property
     def mel_filter(self) -> np.ndarray:
@@ -225,7 +225,7 @@ class MelSpectrogramEncoder:
         pad_mode: str | None = "reflect",
         as_mx: bool = False,
     ):
-        audio = _prepare_signal(waveform)
+        audio = prepare_signal(waveform)
         if pad_mode is not None:
             pad = max((self.config.n_fft - self.config.hop_length) // 2, 0)
             if pad > 0:
@@ -234,7 +234,7 @@ class MelSpectrogramEncoder:
                     mode = "constant"
                 audio = np.pad(audio, (pad, pad), mode=mode)  # pyright: ignore
 
-        stft_matrix = _stft(audio, self.config, self._window)
+        stft_matrix = stft(audio, self.config, self._window)
         magnitude = np.abs(stft_matrix) ** self.config.power
         mel = magnitude @ self._mel_filter.T
         mel = np.maximum(mel, _EPS)
@@ -269,7 +269,7 @@ class MelSpectrogramDecoder:
         log_mel: bool = True,
         as_mx: bool = False,
     ):
-        mel = _ensure_numpy(mel_spectrogram).astype(np.float32)
+        mel = ensure_numpy(mel_spectrogram).astype(np.float32)
         if mel.ndim != 2:
             raise ValueError("mel_spectrogram must be a 2D array of shape (frames, bins)")
         if log_mel:
@@ -278,7 +278,7 @@ class MelSpectrogramDecoder:
         power_spec = np.maximum(power_spec, _EPS)
         magnitude = power_spec ** (1.0 / self.config.power)
 
-        waveform = _griffin_lim(
+        waveform = griffin_lim(
             magnitude,
             self.config,
             self._window,

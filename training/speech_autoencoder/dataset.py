@@ -24,7 +24,7 @@ QUALITY_FLAG_TO_FIELD = {
 }
 
 
-def _ensure_dataset_dir(path: Path) -> Path:
+def ensure_dataset_dir(path: Path) -> Path:
     if not path.exists():
         raise FileNotFoundError(
             f"Dataset directory '{path}' was not found. "
@@ -34,14 +34,14 @@ def _ensure_dataset_dir(path: Path) -> Path:
     return path
 
 
-def _normalize_optional(value: str | None) -> str | None:
+def normalize_optional(value: str | None) -> str | None:
     if value is None:
         return None
     cleaned = str(value).strip()
     return cleaned or None
 
 
-def _parse_quality_tags(raw_tags: str | None) -> tuple[tuple[str, ...], dict[str, bool]]:
+def parse_quality_tags(raw_tags: str | None) -> tuple[tuple[str, ...], dict[str, bool]]:
     tags = tuple(tag for tag in (raw_tags or "").split("|") if tag)
     flag_values = {field: False for field in QUALITY_FLAG_TO_FIELD.values()}
     for tag in tags:
@@ -51,7 +51,7 @@ def _parse_quality_tags(raw_tags: str | None) -> tuple[tuple[str, ...], dict[str
     return tags, flag_values
 
 
-def _decode_audio_with_ffmpeg(audio_path: Path, target_sr: int) -> tuple[np.ndarray, int]:
+def decode_audio_with_ffmpeg(audio_path: Path, target_sr: int) -> tuple[np.ndarray, int]:
     ffmpeg_bin = shutil.which("ffmpeg")
     if ffmpeg_bin is None:
         raise RuntimeError(
@@ -86,7 +86,6 @@ def _decode_audio_with_ffmpeg(audio_path: Path, target_sr: int) -> tuple[np.ndar
         stderr = exc.stderr.decode("utf-8", errors="ignore")
         raise RuntimeError(f"ffmpeg failed to decode '{audio_path}': {stderr}") from exc
 
-    # Normalize to [-1, 1] float32
     waveform = np.frombuffer(result.stdout, dtype=np.int16).astype(np.float32) / 32768.0
     return waveform, target_sr
 
@@ -95,7 +94,7 @@ def decode_audio_file(audio_path: Path | str, target_sr: int = 16_000) -> tuple[
     path = Path(audio_path)
     if not path.exists():
         raise FileNotFoundError(f"Audio file '{path}' was not found")
-    return _decode_audio_with_ffmpeg(path, target_sr)
+    return decode_audio_with_ffmpeg(path, target_sr)
 
 
 @dataclass(slots=True, frozen=True)
@@ -153,7 +152,7 @@ class SpeechSample:
         return waveform, sample_rate
 
 
-def _load_reported_map(dataset_dir: Path) -> dict[int, ReportedIssue]:
+def load_reported_map(dataset_dir: Path) -> dict[int, ReportedIssue]:
     report_path = dataset_dir / REPORTED_FILENAME
     if not report_path.exists():
         return {}
@@ -164,12 +163,12 @@ def _load_reported_map(dataset_dir: Path) -> dict[int, ReportedIssue]:
         audio_id = int(row["audio_id"])
         reported[audio_id] = ReportedIssue(
             reason=row.get("reason") or "unspecified",
-            comment=_normalize_optional(row.get("comment")),
+            comment=normalize_optional(row.get("comment")),
         )
     return reported
 
 
-def _load_metadata_frame(dataset_dir: Path) -> pl.DataFrame:
+def load_metadata_frame(dataset_dir: Path) -> pl.DataFrame:
     metadata_path = dataset_dir / METADATA_FILENAME
     if not metadata_path.exists():
         raise FileNotFoundError(
@@ -180,11 +179,11 @@ def _load_metadata_frame(dataset_dir: Path) -> pl.DataFrame:
     return df
 
 
-def _row_to_sample(
+def row_to_sample(
     row: dict[str, object],
     reported_map: dict[int, ReportedIssue],
 ) -> SpeechSample:
-    tags, flag_values = _parse_quality_tags(row.get("quality_tags"))
+    tags, flag_values = parse_quality_tags(row.get("quality_tags"))
     audio_id = int(row["audio_id"])
     reported_issue = reported_map.get(audio_id)
     return SpeechSample(
@@ -196,8 +195,8 @@ def _row_to_sample(
         prompt=str(row.get("prompt") or ""),
         transcription=str(row.get("transcription") or ""),
         votes=int(row["votes"] or 0),
-        age=_normalize_optional(row.get("age")),
-        gender=_normalize_optional(row.get("gender")),
+        age=normalize_optional(row.get("age")),
+        gender=normalize_optional(row.get("gender")),
         language=str(row.get("language") or "unknown"),
         split=str(row.get("split") or "unknown"),
         char_per_sec=float(row["char_per_sec"]) if row.get("char_per_sec") is not None else None,
@@ -224,7 +223,7 @@ class SpsCorpusDataset(Sequence[SpeechSample]):
         exclude_reported: bool = False,
     ) -> None:
         base_dir = Path(dataset_dir) if dataset_dir else DEFAULT_DATASET_DIR
-        self.dataset_dir = _ensure_dataset_dir(base_dir)
+        self.dataset_dir = ensure_dataset_dir(base_dir)
         self._requested_splits = (
             {split.lower()}
             if isinstance(split, str)
@@ -236,15 +235,15 @@ class SpsCorpusDataset(Sequence[SpeechSample]):
         self._samples = self._load_samples()
 
     def _load_samples(self) -> tuple[SpeechSample, ...]:
-        df = _load_metadata_frame(self.dataset_dir)
-        reported_map = _load_reported_map(self.dataset_dir)
+        df = load_metadata_frame(self.dataset_dir)
+        reported_map = load_reported_map(self.dataset_dir)
 
         if self._requested_splits:
             df = df.filter(pl.col("split").str.to_lowercase().is_in(list(self._requested_splits)))
 
         samples: list[SpeechSample] = []
         for row in df.iter_rows(named=True):
-            sample = _row_to_sample(row, reported_map)
+            sample = row_to_sample(row, reported_map)
             if self._drop_quality_tags and any(
                 tag in self._drop_quality_tags for tag in sample.quality_tags
             ):
