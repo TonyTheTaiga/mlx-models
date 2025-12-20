@@ -18,6 +18,8 @@ dependencies = [
   'tqdm',
   "tiktoken",
   "polars>=1.35.2",
+  "opencv-python-headless",
+  "pyyaml",
 ]
 dynamic = ["version"]
 

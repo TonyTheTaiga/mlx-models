@@ -1,6 +1,8 @@
 import json
 import math
 from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
 from uuid import uuid4
 
 import mlx.core as mx
@@ -9,6 +11,7 @@ import mlx.optimizers as optim
 import numpy as np
 import polars as pl
 import tiktoken
+import yaml
 from mlx.utils import tree_flatten
 from tora import Tora
 from tqdm import tqdm
@@ -16,11 +19,76 @@ from tqdm import tqdm
 from networks.transformers.bert.model import Bert
 
 ROOT = Path(__file__).resolve().parents[2]
-DATASET_PATH = ROOT / "data" / "bookcorpus-refined" / "extracted" / "BookCorpus3.csv"
-DATASET_NAME = DATASET_PATH.stem
-CHECKPOINT_DIR = ROOT / "training" / "bert" / "checkpoints"
-DESCRIPTION = f"BERT MLM pretraining on {DATASET_NAME}"
-TEXT_COL = "0"
+CONFIG_PATH = Path(__file__).with_name("config.yaml")
+
+
+def load_yaml_config(path: Path) -> dict[str, Any]:
+    with path.expanduser().open("r", encoding="utf-8") as f:
+        data = yaml.safe_load(f) or {}
+    return data
+
+
+def resolve_path(value: str | None, base: Path) -> Path | None:
+    if value is None:
+        return None
+    path = Path(value).expanduser()
+    if not path.is_absolute():
+        path = (base / path).resolve()
+    return path
+
+
+def build_config(config_path: Path = CONFIG_PATH) -> SimpleNamespace:
+    cfg = load_yaml_config(config_path)
+    base = config_path.parent
+
+    dataset_path = resolve_path(cfg.get("dataset_path"), base) or (
+        ROOT / "data" / "bookcorpus-refined" / "extracted" / "BookCorpus3.csv"
+    )
+    dataset_name = dataset_path.stem
+    checkpoint_dir = resolve_path(cfg.get("checkpoint_dir"), base) or (
+        ROOT / "training" / "bert" / "checkpoints"
+    )
+    description = cfg.get("description", f"BERT MLM pretraining on {dataset_name}")
+    text_col = str(cfg.get("text_column", "0"))
+    workspace_id = cfg.get("workspace_id", "da377350-b7dc-416d-a2fc-8c232396e476")
+    tokenizer = cfg.get("tokenizer", "gpt2")
+    seq_len = int(cfg.get("seq_len", 128))
+    batch_size = int(cfg.get("batch_size", 32))
+    epochs = int(cfg.get("epochs", 50))
+    learning_rate = float(cfg.get("learning_rate", 1e-4))
+    d_model = int(cfg.get("d_model", 256))
+    n_heads = int(cfg.get("n_heads", 4))
+    n_layers = int(cfg.get("n_layers", 4))
+    mask_prob = float(cfg.get("mask_prob", 0.15))
+    max_sequences = cfg.get("max_sequences")
+    chunk_batches = int(cfg.get("chunk_batches", 64))
+
+    sample_log_value = cfg.get("sample_log")
+    if sample_log_value is None:
+        sample_log_path = checkpoint_dir / f"bert_mlm_samples_{dataset_name}.jsonl"
+    else:
+        sample_log_path = resolve_path(sample_log_value, checkpoint_dir or base)
+
+    return SimpleNamespace(
+        dataset_path=dataset_path,
+        dataset_name=dataset_name,
+        checkpoint_dir=checkpoint_dir,
+        description=description,
+        text_col=text_col,
+        workspace_id=workspace_id,
+        tokenizer=tokenizer,
+        seq_len=seq_len,
+        batch_size=batch_size,
+        epochs=epochs,
+        learning_rate=learning_rate,
+        d_model=d_model,
+        n_heads=n_heads,
+        n_layers=n_layers,
+        mask_prob=mask_prob,
+        max_sequences=max_sequences,
+        chunk_batches=chunk_batches,
+        sample_log_path=sample_log_path,
+    )
 
 
 class BertMLMHead(nn.Module):
@@ -69,6 +137,7 @@ def stream_batches(
     pad_id: int,
     batch_size: int,
     chunk_batches: int,
+    text_col: str,
     max_sequences: int | None = None,
 ):
     chunk_size = chunk_batches * batch_size
@@ -105,7 +174,7 @@ def stream_batches(
                 break
             df = batches[0]
 
-            texts = df[TEXT_COL].to_list()
+            texts = df[text_col].to_list()
             for text in texts:
                 text = text or ""
                 token_ids = tokenizer.encode_ordinary(text)
@@ -133,7 +202,11 @@ def stream_batches(
 
 
 def count_total_sequences(
-    path: Path, tokenizer, seq_len: int, max_sequences: int | None = None
+    path: Path,
+    tokenizer,
+    seq_len: int,
+    text_col: str,
+    max_sequences: int | None = None,
 ) -> int:
     if max_sequences is not None:
         return max_sequences
@@ -148,7 +221,7 @@ def count_total_sequences(
             if not batches:
                 break
             df = batches[0]
-            texts = df[TEXT_COL].to_list()
+            texts = df[text_col].to_list()
 
             for text in texts:
                 text = text or ""
@@ -258,14 +331,19 @@ def sample_generation(
     seq_len: int,
     batch_size: int,
     chunk_batches: int,
+    dataset_path: Path,
+    text_col: str,
+    max_sequences: int | None,
 ) -> dict | None:
     batches = stream_batches(
-        DATASET_PATH,
+        dataset_path,
         tokenizer,
         seq_len,
         pad_token_id,
         batch_size,
         chunk_batches,
+        text_col=text_col,
+        max_sequences=max_sequences,
     )
     try:
         batch = next(batches)
@@ -295,31 +373,23 @@ def sample_generation(
     return record
 
 
-def main():
-    tokenizer = tiktoken.get_encoding("gpt2")
+def main(cfg: SimpleNamespace | None = None):
+    cfg = cfg or build_config()
+
+    tokenizer = tiktoken.get_encoding(cfg.tokenizer)
     base_vocab_size = tokenizer.n_vocab
     mask_token_id = base_vocab_size
     pad_token_id = base_vocab_size + 1
     vocab_size = base_vocab_size + 2
 
-    seq_len = 128
-    batch_size = 32
-    d_model = 256
-    n_heads = 4
-    n_layers = 4
-    epochs = 50
-    learning_rate = 1e-4
-    mask_prob = 0.15
-    max_sequences: int | None = 1_000_000  # Set to None to stream the entire dataset
-
     model = BertForMLM(
         vocab_size=vocab_size,
-        d_model=d_model,
-        n_heads=n_heads,
-        max_seq_len=seq_len,
-        n_layers=n_layers,
+        d_model=cfg.d_model,
+        n_heads=cfg.n_heads,
+        max_seq_len=cfg.seq_len,
+        n_layers=cfg.n_layers,
     )
-    optimizer = optim.AdamW(learning_rate=learning_rate)
+    optimizer = optim.AdamW(learning_rate=cfg.learning_rate)
     mx.eval(model.parameters())
 
     loss_fn = lambda m, batch: compute_loss(  # type: ignore
@@ -328,50 +398,57 @@ def main():
         pad_token_id,
         mask_token_id,
         base_vocab_size,
-        mask_prob,
+        cfg.mask_prob,
     )
     loss_and_grad_fn = nn.value_and_grad(model, loss_fn)
 
     num_params = sum(v.size for _, v in tree_flatten(model.parameters()))
     total_sequences = count_total_sequences(
-        DATASET_PATH, tokenizer, seq_len, max_sequences=max_sequences
+        cfg.dataset_path,
+        tokenizer,
+        cfg.seq_len,
+        cfg.text_col,
+        max_sequences=cfg.max_sequences,
     )
+    if cfg.max_sequences is None:
+        print(f"max_sequences=None, streaming all {total_sequences:,} sequences in the dataset.")
     tora = Tora.create_experiment(
         name=f"BERT_MLM_{uuid4().hex[:3]}",
-        description=DESCRIPTION,
+        description=cfg.description,
         hyperparams={
-            "seq_len": seq_len,
-            "batch_size": batch_size,
-            "epochs": epochs,
-            "learning_rate": learning_rate,
-            "d_model": d_model,
-            "n_heads": n_heads,
-            "n_layers": n_layers,
-            "mask_prob": mask_prob,
+            "seq_len": cfg.seq_len,
+            "batch_size": cfg.batch_size,
+            "epochs": cfg.epochs,
+            "learning_rate": cfg.learning_rate,
+            "d_model": cfg.d_model,
+            "n_heads": cfg.n_heads,
+            "n_layers": cfg.n_layers,
+            "mask_prob": cfg.mask_prob,
             "num_params": num_params,
             "max_sequences": total_sequences,
         },
-        workspace_id="da377350-b7dc-416d-a2fc-8c232396e476",
+        workspace_id=cfg.workspace_id,
     )
     tora.max_buffer_len = 1
 
-    chunk_batches = 64
-    batches_per_epoch = max(1, math.ceil(total_sequences / batch_size))
+    chunk_batches = cfg.chunk_batches
+    batches_per_epoch = max(1, math.ceil(total_sequences / cfg.batch_size))
 
-    generation_log_path = CHECKPOINT_DIR / f"bert_mlm_samples_{DATASET_NAME}.jsonl"
+    generation_log_path = cfg.sample_log_path
     generation_log_path.parent.mkdir(parents=True, exist_ok=True)
 
-    for epoch in range(epochs):
+    for epoch in range(cfg.epochs):
         culm_loss = 0.0
         num_samples = 0
 
         batches = stream_batches(
-            DATASET_PATH,
+            cfg.dataset_path,
             tokenizer,
-            seq_len,
+            cfg.seq_len,
             pad_token_id,
-            batch_size,
+            cfg.batch_size,
             chunk_batches,
+            text_col=cfg.text_col,
             max_sequences=total_sequences,
         )
 
@@ -402,10 +479,13 @@ def main():
                     pad_token_id,
                     mask_token_id,
                     base_vocab_size,
-                    mask_prob,
-                    seq_len,
-                    batch_size,
+                    cfg.mask_prob,
+                    cfg.seq_len,
+                    cfg.batch_size,
                     chunk_batches,
+                    cfg.dataset_path,
+                    cfg.text_col,
+                    cfg.max_sequences,
                 )
                 if record:
                     record["epoch"] = epoch + 1
@@ -417,11 +497,11 @@ def main():
         progress.close()
         avg_loss = culm_loss / num_samples
         tora.metric("train_loss", step_or_epoch=epoch, value=avg_loss)
-        print(f"Epoch {epoch + 1}/{epochs} - train loss: {avg_loss:.4f}")
+        print(f"Epoch {epoch + 1}/{cfg.epochs} - train loss: {avg_loss:.4f}")
 
-    CHECKPOINT_DIR.mkdir(parents=True, exist_ok=True)
+    cfg.checkpoint_dir.mkdir(parents=True, exist_ok=True)
     checkpoint_id = uuid4().hex[:8]
-    checkpoint_path = CHECKPOINT_DIR / f"bert_mlm_{DATASET_NAME}_{checkpoint_id}.npz"
+    checkpoint_path = cfg.checkpoint_dir / f"bert_mlm_{cfg.dataset_name}_{checkpoint_id}.npz"
     model.save_weights(str(checkpoint_path))
     print(f"Saved checkpoint to {checkpoint_path}")
 
@@ -431,10 +511,13 @@ def main():
         pad_token_id,
         mask_token_id,
         base_vocab_size,
-        mask_prob,
-        seq_len,
-        batch_size,
+        cfg.mask_prob,
+        cfg.seq_len,
+        cfg.batch_size,
         chunk_batches,
+        cfg.dataset_path,
+        cfg.text_col,
+        cfg.max_sequences,
     )
     if record:
         with generation_log_path.open("a", encoding="utf-8") as f:

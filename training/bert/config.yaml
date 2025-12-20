@@ -1,0 +1,17 @@
+dataset_path: ../../data/bookcorpus-refined/extracted/BookCorpus3.csv
+text_column: "0"
+checkpoint_dir: ./checkpoints
+description: "BERT MLM pretraining on BookCorpus3"
+workspace_id: da377350-b7dc-416d-a2fc-8c232396e476
+tokenizer: gpt2
+seq_len: 128
+batch_size: 32
+epochs: 50
+learning_rate: 0.0001
+d_model: 256
+n_heads: 4
+n_layers: 4
+mask_prob: 0.15
+max_sequences: 1000000
+chunk_batches: 64
+sample_log: bert_mlm_samples_BookCorpus3.jsonl
