@@ -1,2 +1,0 @@
-real peak=0.459808 rms=0.044809 clip_frac=0.000000
-fake peak=1.000000 rms=0.428211 clip_frac=0.000000
