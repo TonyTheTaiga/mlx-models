@@ -1,12 +1,12 @@
 import argparse
-import shutil
-import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterator, Sequence, overload
 
 import numpy as np
 import polars as pl
+import soundfile as sf
+import soxr
 
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_DATASET_DIR = ROOT / "data" / "sps-corpus-1.0-2025-11-25-en"
@@ -51,50 +51,20 @@ def parse_quality_tags(raw_tags: str | None) -> tuple[tuple[str, ...], dict[str,
     return tags, flag_values
 
 
-def decode_audio_with_ffmpeg(audio_path: Path, target_sr: int) -> tuple[np.ndarray, int]:
-    ffmpeg_bin = shutil.which("ffmpeg")
-    if ffmpeg_bin is None:
-        raise RuntimeError(
-            "ffmpeg was not found on PATH. Install ffmpeg to enable waveform decoding."
-        )
-
-    command = [
-        ffmpeg_bin,
-        "-i",
-        str(audio_path),
-        "-f",
-        "s16le",
-        "-acodec",
-        "pcm_s16le",
-        "-ac",
-        "1",
-        "-ar",
-        str(target_sr),
-        "-loglevel",
-        "error",
-        "pipe:1",
-    ]
-
-    try:
-        result = subprocess.run(
-            command,
-            check=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-        )
-    except subprocess.CalledProcessError as exc:
-        stderr = exc.stderr.decode("utf-8", errors="ignore")
-        raise RuntimeError(f"ffmpeg failed to decode '{audio_path}': {stderr}") from exc
-
-    waveform = np.frombuffer(result.stdout, dtype=np.int16).astype(np.float32) / 32768.0
-    return waveform, target_sr
+def decode_audio(audio_path: Path, target_sr: int) -> tuple[np.ndarray, int]:
+    waveform, sr = sf.read(audio_path, dtype="float32", always_2d=False)
+    if waveform.ndim > 1:
+        waveform = waveform.mean(axis=1)
+    if sr != target_sr:
+        waveform = soxr.resample(waveform, sr, target_sr, quality="HQ")
+    return waveform.astype(np.float32), target_sr
 
 
 def decode_audio_file(audio_path: Path | str, target_sr: int = 16_000) -> tuple[np.ndarray, int]:
     path = Path(audio_path)
     if not path.exists():
         raise FileNotFoundError(f"Audio file '{path}' was not found")
-    return decode_audio_with_ffmpeg(path, target_sr)
+    return decode_audio(path, target_sr)
 
 
 @dataclass(slots=True, frozen=True)
