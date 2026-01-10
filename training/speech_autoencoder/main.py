@@ -31,6 +31,43 @@ def save_weights(out_dir: Path, ae: SpeechAutoEncoder, mrd: MRD, mpd: MPD) -> No
     mpd.save_weights(str(out_dir / "mpd_weights.npz"))
 
 
+def find_latest_checkpoint(output_dir: Path) -> tuple[Path | None, int]:
+    """Find the latest checkpoint directory and step number."""
+    if not output_dir.exists():
+        return None, 0
+
+    checkpoint_dirs = []
+    for path in output_dir.iterdir():
+        if path.is_dir() and path.name.startswith("step_"):
+            try:
+                step = int(path.name.split("_")[1])
+                checkpoint_dirs.append((path, step))
+            except (ValueError, IndexError):
+                continue
+
+    if not checkpoint_dirs:
+        return None, 0
+
+    # Return the checkpoint with the highest step number
+    checkpoint_dirs.sort(key=lambda x: x[1])
+    return checkpoint_dirs[-1]
+
+
+def load_checkpoint(checkpoint_dir: Path, ae: SpeechAutoEncoder, mrd: MRD, mpd: MPD) -> None:
+    """Load weights from a checkpoint directory."""
+    ae_weights_path = checkpoint_dir / "ae_weights.npz"
+    mrd_weights_path = checkpoint_dir / "mrd_weights.npz"
+    mpd_weights_path = checkpoint_dir / "mpd_weights.npz"
+
+    if not all([ae_weights_path.exists(), mrd_weights_path.exists(), mpd_weights_path.exists()]):
+        raise FileNotFoundError(f"Missing weight files in {checkpoint_dir}")
+
+    ae.load_weights(str(ae_weights_path))
+    mrd.load_weights(str(mrd_weights_path))
+    mpd.load_weights(str(mpd_weights_path))
+    mx.eval(ae.parameters(), mrd.parameters(), mpd.parameters())
+
+
 def compute_learning_rate(
     step: int,
     base_lr: float,
@@ -82,30 +119,28 @@ class MetricLogger:
     def __init__(self) -> None:
         self.total: dict[str, float] = {}
         self.window: dict[str, float] = {}
-        self.total_count = 0
-        self.window_count = 0
+        self.total_counts: dict[str, int] = {}
+        self.window_counts: dict[str, int] = {}
         self.last: dict[str, float] = {}
 
     def update(self, metrics: dict[str, float]) -> None:
         metrics = {k: float(v) for k, v in metrics.items()}
         self.last = metrics
-        self.total_count += 1
-        self.window_count += 1
         for key, value in metrics.items():
             self.total[key] = self.total.get(key, 0.0) + value
             self.window[key] = self.window.get(key, 0.0) + value
+            self.total_counts[key] = self.total_counts.get(key, 0) + 1
+            self.window_counts[key] = self.window_counts.get(key, 0) + 1
 
     def window_mean(self) -> dict[str, float]:
-        denom = max(self.window_count, 1)
-        return {k: v / denom for k, v in self.window.items()}
+        return {k: v / max(self.window_counts.get(k, 0), 1) for k, v in self.window.items()}
 
     def total_mean(self) -> dict[str, float]:
-        denom = max(self.total_count, 1)
-        return {k: v / denom for k, v in self.total.items()}
+        return {k: v / max(self.total_counts.get(k, 0), 1) for k, v in self.total.items()}
 
     def reset_window(self) -> None:
         self.window.clear()
-        self.window_count = 0
+        self.window_counts.clear()
 
 
 def format_table(rows: list[tuple[str, object]], headers: list[str]) -> str:
@@ -163,6 +198,7 @@ def dataloader(
             wav, _sr = sample.load_waveform(target_sr=sample_rate, as_mx=False)
             wav = pad_or_crop_1d(wav, aligned_len, rng=rng)
             mel = encoder.encode(wav, log_mel=log_mel, as_mx=False)
+
             if int(mel.shape[0]) * out_dims_val != wav.shape[0]:
                 raise ValueError(
                     f"Waveform/mel misalignment: wav={wav.shape[0]} "
@@ -207,7 +243,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--min-learning-rate",
         type=float,
-        default=1e-5,
+        default=1e-6,
         help="Lower bound for decayed learning rate.",
     )
     parser.add_argument(
@@ -229,7 +265,6 @@ def parse_args() -> argparse.Namespace:
 
 def run_train(args: argparse.Namespace) -> None:
     dataset = SpsCorpusDataset(dataset_dir=args.dataset_dir, split="train")
-
     sample_rate = int(args.sample_rate)
     segment_seconds = float(args.segment_seconds)
     batch_size = int(args.batch_size)
@@ -248,14 +283,24 @@ def run_train(args: argparse.Namespace) -> None:
     mel_cfg = MelSpectrogramConfig(
         sample_rate=sample_rate,
         n_fft=1536,
-        hop_length=352,
+        hop_length=384,
         win_length=1536,
         n_mels=228,
     )
 
-    ae = SpeechAutoEncoder(in_dims=228, hidden_dims=24, out_dims=mel_cfg.hop_length)
-    mrd = MRD()
+    ae = SpeechAutoEncoder(in_dims=mel_cfg.n_mels, hidden_dims=24, out_dims=mel_cfg.hop_length)
+    mrd = MRD(fft_sizes=[192, 384, 768])
     mpd = MPD()
+
+    # Check for existing checkpoint
+    output_dir = Path("output")
+    checkpoint_path, start_step = find_latest_checkpoint(output_dir)
+    if checkpoint_path is not None:
+        print(f"Loading checkpoint from {checkpoint_path} (step {start_step})")
+        load_checkpoint(checkpoint_path, ae, mrd, mpd)
+    else:
+        start_step = 0
+        print("No checkpoint found, starting from scratch")
 
     opt_g = optim.AdamW(learning_rate=learning_rate)
     opt_mrd = optim.AdamW(learning_rate=disc_learning_rate)
@@ -288,11 +333,12 @@ def run_train(args: argparse.Namespace) -> None:
         ("min_lr", min_learning_rate),
         ("warmup_steps", warmup_steps),
         ("steps", steps),
+        ("start_step", start_step),
         ("seed", seed),
     ]
     print("config:\n" + format_table(config_rows, ["param", "value"]))
 
-    progress = tqdm(range(steps), total=steps, desc="train")
+    progress = tqdm(range(start_step, steps), total=steps, initial=start_step, desc="train")
     last_lr = learning_rate
     for step in progress:
         lr = compute_learning_rate(
@@ -311,43 +357,35 @@ def run_train(args: argparse.Namespace) -> None:
         batch = next(loader)
         mel = batch["mel"]
         real_waveform = batch["waveform"]
-        (g_loss_value, loss_dict), g_grads = g_loss_and_grad_fn(ae, mrd, mpd, mel, real_waveform)
-        fake_waveform = mx.stop_gradient(loss_dict["generated"])
 
+        (g_loss_value, loss_dict), g_grads = g_loss_and_grad_fn(
+            ae, mrd, mpd, mel, real_waveform
+        )
+        opt_g.update(ae, g_grads)
+
+        fake_waveform = mx.stop_gradient(ae(mel))
         mrd_d_loss, mrd_grads = mrd_loss_and_grad_fn(mrd, real_waveform, fake_waveform)
         mpd_d_loss, mpd_grads = mpd_loss_and_grad_fn(mpd, real_waveform, fake_waveform)
 
-        metrics = {
-            "mrd_d": float(mrd_d_loss.item()),
-            "mpd_d": float(mpd_d_loss.item()),
-            "g": float(g_loss_value.item()),
-            "reconstruction_loss": loss_dict["reconstruction_loss"],
-            "adversarial_loss": loss_dict["adversarial_loss"],
-            "feature_matching_loss": loss_dict["feature_matching_loss"],
-        }
-        logger.update(metrics)
-
         opt_mrd.update(mrd, mrd_grads)
         opt_mpd.update(mpd, mpd_grads)
-        opt_g.update(ae, g_grads)
+        mx.eval(ae.parameters(), mrd.parameters(), mpd.parameters(), opt_g.state, opt_mrd.state, opt_mpd.state)
 
-        mx.eval(
-            ae.parameters(),
-            mrd.parameters(),
-            mpd.parameters(),
-            opt_g.state,
-            opt_mrd.state,
-            opt_mpd.state,
-        )
+        metrics = {
+            "g": float(g_loss_value.item()),
+            "reconstruction_loss": float(loss_dict["reconstruction_loss"]),
+            "adversarial_loss": float(loss_dict["adversarial_loss"]),
+            "feature_matching_loss": float(loss_dict["feature_matching_loss"]),
+            "mrd_d": float(mrd_d_loss.item()),
+            "mpd_d": float(mpd_d_loss.item()),
+        }
 
-        mrd_d_val = metrics["mrd_d"]
-        mpd_d_val = metrics["mpd_d"]
-        g_val = metrics["g"]
+        logger.update(metrics)
 
         progress.set_postfix(
-            mrd_d=f"{mrd_d_val:.4f}",
-            mpd_d=f"{mpd_d_val:.4f}",
-            g=f"{g_val:.4f}",
+            mrd_d=f"{metrics['mrd_d']:.4f}",
+            mpd_d=f"{metrics['mpd_d']:.4f}",
+            g=f"{metrics['g']:.4f}",
             lr=f"{lr:.3g}",
         )
 
@@ -357,10 +395,13 @@ def run_train(args: argparse.Namespace) -> None:
                 ("step", f"{step + 1}/{steps}"),
                 ("avg_mrd_d", window_means.get("mrd_d", 0.0)),
                 ("avg_mpd_d", window_means.get("mpd_d", 0.0)),
-                ("avg_g", window_means.get("g", 0.0)),
-                ("avg_reconstruction_loss", window_means.get("reconstruction_loss", 0.0)),
-                ("avg_adversarial_loss", window_means.get("adversarial_loss", 0.0)),
-                ("avg_feature_matching_loss", window_means.get("feature_matching_loss", 0.0)),
+                ("avg_g", window_means.get("g", float("nan"))),
+                ("avg_reconstruction_loss", window_means.get("reconstruction_loss", float("nan"))),
+                ("avg_adversarial_loss", window_means.get("adversarial_loss", float("nan"))),
+                (
+                    "avg_feature_matching_loss",
+                    window_means.get("feature_matching_loss", float("nan")),
+                ),
                 ("lr", last_lr),
             ]
             print(format_table(log_rows, ["metric", "value"]))
@@ -374,7 +415,7 @@ def run_train(args: argparse.Namespace) -> None:
                 mel_cfg=mel_cfg,
                 sample_rate=sample_rate,
                 out_dir=out_dir,
-                sample_index=0,
+                sample_index=1,
                 chunk_frames=256,
                 overlap_frames=32,
             )
@@ -385,10 +426,10 @@ def run_train(args: argparse.Namespace) -> None:
         ("steps", steps),
         ("avg_mrd_d", total_means.get("mrd_d", 0.0)),
         ("avg_mpd_d", total_means.get("mpd_d", 0.0)),
-        ("avg_g", total_means.get("g", 0.0)),
-        ("avg_reconstruction_loss", total_means.get("reconstruction_loss", 0.0)),
-        ("avg_adversarial_loss", total_means.get("adversarial_loss", 0.0)),
-        ("avg_feature_matching_loss", total_means.get("feature_matching_loss", 0.0)),
+        ("avg_g", total_means.get("g", float("nan"))),
+        ("avg_reconstruction_loss", total_means.get("reconstruction_loss", float("nan"))),
+        ("avg_adversarial_loss", total_means.get("adversarial_loss", float("nan"))),
+        ("avg_feature_matching_loss", total_means.get("feature_matching_loss", float("nan"))),
         ("lr", last_lr),
     ]
     print("summary:\n" + format_table(summary_rows, ["metric", "value"]))
@@ -399,7 +440,7 @@ def run_train(args: argparse.Namespace) -> None:
         mel_cfg=mel_cfg,
         sample_rate=sample_rate,
         out_dir=Path("output") / "final",
-        sample_index=0,
+        sample_index=1,
         chunk_frames=256,
         overlap_frames=32,
     )

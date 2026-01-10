@@ -44,6 +44,10 @@ def stft_magnitude(
     power: float = 2.0,
 ) -> mx.array:
     waveform = ensure_waveform_2d(waveform)
+    pad = max((fft_size - hop_length) // 2, 0)
+    if pad > 0:
+        waveform = mx.pad(waveform, pad_width=[(0, 0), (pad, pad)], constant_values=0)
+
     window = hann_window(win_length, dtype=mx.float32)
     frames = frame_signal_1d(waveform, frame_length=win_length, hop_length=hop_length)
     frames = frames * window[None, None, :]

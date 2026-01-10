@@ -3,6 +3,7 @@ import wave
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+import matplotlib.pyplot as plt
 import mlx.core as mx
 import numpy as np
 
@@ -151,7 +152,8 @@ def save_full_reconstruction(
     else:
         wav_padded = wav
 
-    mel = MelSpectrogramEncoder(mel_cfg).encode(
+    encoder = MelSpectrogramEncoder(mel_cfg)
+    mel = encoder.encode(
         wav_padded,
         log_mel=True,
         pad_mode="reflect",
@@ -187,13 +189,44 @@ def save_full_reconstruction(
         encoding="utf-8",
     )
 
-    # For listening/debug: avoid harsh clipping distortion if the model output is out of range.
     fake_to_write = fake_np
     if fake_stats["peak"] > 1.0:
         fake_to_write = peak_normalize(fake_to_write, peak=0.95)
 
     write_wav_mono(out_dir / f"full_{sample.audio_id}_real.wav", wav, sample_rate)
     write_wav_mono(out_dir / f"full_{sample.audio_id}_fake.wav", fake_to_write, sample_rate)
+
+    mel_fake = encoder.encode(fake_np, log_mel=True, pad_mode="reflect", as_mx=False)
+
+    fig, axes = plt.subplots(2, 1, figsize=(12, 8))
+
+    im0 = axes[0].imshow(
+        mel.T,
+        aspect="auto",
+        origin="lower",
+        interpolation="nearest",
+        cmap="viridis",
+    )
+    axes[0].set_title(f"Original Mel Spectrogram (ID: {sample.audio_id})")
+    axes[0].set_xlabel("Frame")
+    axes[0].set_ylabel("Mel Bin")
+    plt.colorbar(im0, ax=axes[0], label="Log Magnitude")
+
+    im1 = axes[1].imshow(
+        mel_fake.T,
+        aspect="auto",
+        origin="lower",
+        interpolation="nearest",
+        cmap="viridis",
+    )
+    axes[1].set_title("Reconstructed Mel Spectrogram")
+    axes[1].set_xlabel("Frame")
+    axes[1].set_ylabel("Mel Bin")
+    plt.colorbar(im1, ax=axes[1], label="Log Magnitude")
+
+    plt.tight_layout()
+    plt.savefig(out_dir / f"full_{sample.audio_id}_spectrogram.png", dpi=150, bbox_inches="tight")
+    plt.close(fig)
 
 
 if __name__ == "__main__":

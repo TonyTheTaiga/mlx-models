@@ -203,6 +203,8 @@ class MPD(nn.Module):
 
         def __call__(self, waveform: mx.array) -> tuple[mx.array, list[mx.array]]:
             x = self._reshape_period(waveform)
+            print(waveform.shape, x.shape)
+
             features: list[mx.array] = []
             for layer in self.layers:
                 x = layer(x)
