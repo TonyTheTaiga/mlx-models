@@ -283,7 +283,7 @@ def run_train(args: argparse.Namespace) -> None:
     mel_cfg = MelSpectrogramConfig(
         sample_rate=sample_rate,
         n_fft=1536,
-        hop_length=384,
+        hop_length=256,
         win_length=1536,
         n_mels=228,
     )
@@ -351,16 +351,14 @@ def run_train(args: argparse.Namespace) -> None:
         )
         last_lr = lr
         set_optim_lr(opt_g, lr)
-        set_optim_lr(opt_mrd, lr if disc_learning_rate == learning_rate else disc_learning_rate)
-        set_optim_lr(opt_mpd, lr if disc_learning_rate == learning_rate else disc_learning_rate)
+        # set_optim_lr(opt_mrd, lr if disc_learning_rate == learning_rate else disc_learning_rate)
+        # set_optim_lr(opt_mpd, lr if disc_learning_rate == learning_rate else disc_learning_rate)
 
         batch = next(loader)
         mel = batch["mel"]
         real_waveform = batch["waveform"]
 
-        (g_loss_value, loss_dict), g_grads = g_loss_and_grad_fn(
-            ae, mrd, mpd, mel, real_waveform
-        )
+        (g_loss_value, loss_dict), g_grads = g_loss_and_grad_fn(ae, mrd, mpd, mel, real_waveform)
         opt_g.update(ae, g_grads)
 
         fake_waveform = mx.stop_gradient(ae(mel))
@@ -369,7 +367,14 @@ def run_train(args: argparse.Namespace) -> None:
 
         opt_mrd.update(mrd, mrd_grads)
         opt_mpd.update(mpd, mpd_grads)
-        mx.eval(ae.parameters(), mrd.parameters(), mpd.parameters(), opt_g.state, opt_mrd.state, opt_mpd.state)
+        mx.eval(
+            ae.parameters(),
+            mrd.parameters(),
+            mpd.parameters(),
+            opt_g.state,
+            opt_mrd.state,
+            opt_mpd.state,
+        )
 
         metrics = {
             "g": float(g_loss_value.item()),

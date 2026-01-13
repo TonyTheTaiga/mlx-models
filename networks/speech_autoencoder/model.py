@@ -10,9 +10,9 @@ class Encoder(nn.Module):
         super().__init__()
 
         self.conv1 = nn.Conv1d(in_channels=in_dims, out_channels=512, kernel_size=7, padding=3)
-        self.bn1 = nn.BatchNorm(num_features=512)
+        self.bn1 = nn.LayerNorm(dims=512)
         self.convnext_blocks = nn.Sequential(
-            *[ConvNeXtBlock(dim=512, expansion=4) for _ in range(10)]
+            *[ConvNeXtBlock(dim=512, expansion=4) for _ in range(8)]
         )
         self.project = nn.Linear(input_dims=512, output_dims=out_dims)
         self.ln1 = nn.LayerNorm(dims=out_dims)
