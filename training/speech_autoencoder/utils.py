@@ -3,6 +3,7 @@ import wave
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+import matplotlib.pyplot as plt
 import mlx.core as mx
 import numpy as np
 
@@ -93,40 +94,74 @@ def reconstruct_mel_in_chunks(
     mel: mx.array,
     out_dims: int,
     chunk_frames: int = 256,
-    overlap_frames: int = 32,
+    overlap_frames: int = 128,
 ) -> mx.array:
-    """Run the autoencoder over a long mel sequence by chunking with overlap.
+    """Run the autoencoder over a long mel sequence with overlap-add.
 
-    Uses symmetric overlap context and keeps only the center chunk region.
+    Uses Hann windowing and overlap-add for smooth chunk boundaries.
+    For mathematically perfect reconstruction, use 50% overlap (overlap_frames = chunk_frames // 2).
     Returns waveform shaped (B, T, 1).
     """
     if mel.ndim != 3:
         raise ValueError("Expected mel shaped (B, frames, bins)")
     if chunk_frames <= 0:
         raise ValueError("chunk_frames must be positive")
-    if overlap_frames < 0:
-        raise ValueError("overlap_frames must be non-negative")
+    if overlap_frames < 0 or overlap_frames >= chunk_frames:
+        raise ValueError("overlap_frames must be in [0, chunk_frames)")
     if out_dims <= 0:
         raise ValueError("out_dims must be positive")
 
     bsz, total_frames, _bins = mel.shape
-    outputs: list[mx.array] = []
+
+    # Handle edge case: audio shorter than one chunk
+    if total_frames <= chunk_frames:
+        wav = model(mel)
+        mx.eval(wav)
+        return wav
+
+    hop_frames = chunk_frames - overlap_frames
+    total_samples = total_frames * out_dims
+    chunk_samples = chunk_frames * out_dims
+
+    # Output buffers (numpy for easy in-place accumulation)
+    output = np.zeros((bsz, total_samples, 1), dtype=np.float32)
+    weight_sum = np.zeros((1, total_samples, 1), dtype=np.float32)
+
+    # Create Hann window in sample domain
+    window_full = np.hanning(chunk_samples).astype(np.float32)
+
     start = 0
     while start < total_frames:
         end = min(start + chunk_frames, total_frames)
-        ctx_start = max(0, start - overlap_frames)
-        ctx_end = min(total_frames, end + overlap_frames)
+        actual_chunk_frames = end - start
+        actual_samples = actual_chunk_frames * out_dims
 
-        mel_ctx = mel[:, ctx_start:ctx_end, :]
-        wav_ctx = model(mel_ctx)
-        mx.eval(wav_ctx)
+        mel_chunk = mel[:, start:end, :]
+        wav_chunk = model(mel_chunk)
+        mx.eval(wav_chunk)
+        wav_np = np.asarray(wav_chunk)
 
-        offset_start = (start - ctx_start) * out_dims
-        offset_end = (end - ctx_start) * out_dims
-        outputs.append(wav_ctx[:, offset_start:offset_end, :])
-        start = end
+        sample_start = start * out_dims
+        sample_end = sample_start + actual_samples
 
-    return mx.concatenate(outputs, axis=1) if outputs else mx.zeros((bsz, 0, 1), dtype=mx.float32)
+        # Get appropriate window (shorter window for last chunk if needed)
+        if actual_chunk_frames == chunk_frames:
+            window = window_full
+        else:
+            window = np.hanning(actual_samples).astype(np.float32)
+
+        # Apply window and accumulate
+        window_3d = window[None, :, None]
+        output[:, sample_start:sample_end, :] += wav_np * window_3d
+        weight_sum[:, sample_start:sample_end, :] += window_3d
+
+        start += hop_frames
+
+    # Normalize by weight sum (avoid division by zero)
+    weight_sum = np.maximum(weight_sum, 1e-8)
+    output = output / weight_sum
+
+    return mx.array(output, dtype=mx.float32)
 
 
 def save_full_reconstruction(
@@ -137,7 +172,7 @@ def save_full_reconstruction(
     out_dir: Path,
     sample_index: int = 0,
     chunk_frames: int = 256,
-    overlap_frames: int = 32,
+    overlap_frames: int = 128,
 ) -> None:
     sample = dataset[sample_index]
     wav, _sr = sample.load_waveform(target_sr=sample_rate, as_mx=False)
@@ -151,7 +186,8 @@ def save_full_reconstruction(
     else:
         wav_padded = wav
 
-    mel = MelSpectrogramEncoder(mel_cfg).encode(
+    encoder = MelSpectrogramEncoder(mel_cfg)
+    mel = encoder.encode(
         wav_padded,
         log_mel=True,
         pad_mode="reflect",
@@ -187,13 +223,44 @@ def save_full_reconstruction(
         encoding="utf-8",
     )
 
-    # For listening/debug: avoid harsh clipping distortion if the model output is out of range.
     fake_to_write = fake_np
     if fake_stats["peak"] > 1.0:
         fake_to_write = peak_normalize(fake_to_write, peak=0.95)
 
     write_wav_mono(out_dir / f"full_{sample.audio_id}_real.wav", wav, sample_rate)
     write_wav_mono(out_dir / f"full_{sample.audio_id}_fake.wav", fake_to_write, sample_rate)
+
+    mel_fake = encoder.encode(fake_np, log_mel=True, pad_mode="reflect", as_mx=False)
+
+    fig, axes = plt.subplots(2, 1, figsize=(12, 8))
+
+    im0 = axes[0].imshow(
+        mel.T,
+        aspect="auto",
+        origin="lower",
+        interpolation="nearest",
+        cmap="viridis",
+    )
+    axes[0].set_title(f"Original Mel Spectrogram (ID: {sample.audio_id})")
+    axes[0].set_xlabel("Frame")
+    axes[0].set_ylabel("Mel Bin")
+    plt.colorbar(im0, ax=axes[0], label="Log Magnitude")
+
+    im1 = axes[1].imshow(
+        mel_fake.T,
+        aspect="auto",
+        origin="lower",
+        interpolation="nearest",
+        cmap="viridis",
+    )
+    axes[1].set_title("Reconstructed Mel Spectrogram")
+    axes[1].set_xlabel("Frame")
+    axes[1].set_ylabel("Mel Bin")
+    plt.colorbar(im1, ax=axes[1], label="Log Magnitude")
+
+    plt.tight_layout()
+    plt.savefig(out_dir / f"full_{sample.audio_id}_spectrogram.png", dpi=150, bbox_inches="tight")
+    plt.close(fig)
 
 
 if __name__ == "__main__":

@@ -1,0 +1,348 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Speech Autoencoder Comparison</title>
+    <script src="https://unpkg.com/wavesurfer.js@7"></script>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        html, body {
+            height: 100%;
+            overflow: hidden;
+        }
+        body {
+            font-family: system-ui, sans-serif;
+            background: #111;
+            color: #ccc;
+            display: flex;
+        }
+        /* Sidebar */
+        .sidebar {
+            width: 220px;
+            min-width: 220px;
+            background: #0a0a0a;
+            border-right: 1px solid #222;
+            display: flex;
+            flex-direction: column;
+            height: 100%;
+        }
+        .sidebar-header {
+            padding: 10px;
+            border-bottom: 1px solid #222;
+            display: flex;
+            gap: 8px;
+        }
+        .sidebar-header button {
+            flex: 1;
+            padding: 6px 10px;
+            font-size: 12px;
+        }
+        .tree {
+            flex: 1;
+            overflow-y: auto;
+            padding: 5px 0;
+        }
+        .tree-item {
+            padding: 6px 12px;
+            cursor: pointer;
+            font-size: 12px;
+            font-family: monospace;
+            border-left: 2px solid transparent;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        .tree-item:hover { background: #1a1a1a; }
+        .tree-item.active {
+            background: #1a1a1a;
+            border-left-color: #4a9eff;
+            color: #fff;
+        }
+        .tree-empty {
+            padding: 20px;
+            text-align: center;
+            color: #444;
+            font-size: 11px;
+        }
+        /* Main area */
+        .main {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            padding: 15px;
+            min-width: 0;
+        }
+        .controls {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 10px;
+            align-items: center;
+            flex-shrink: 0;
+        }
+        button {
+            background: #333;
+            color: #fff;
+            border: 1px solid #444;
+            padding: 8px 16px;
+            cursor: pointer;
+            font-size: 13px;
+        }
+        button:hover { background: #444; }
+        button:disabled { opacity: 0.4; cursor: default; }
+        button.active { background: #555; }
+        .time {
+            font-family: monospace;
+            font-size: 13px;
+            color: #888;
+        }
+        .row {
+            position: relative;
+            margin-bottom: 2px;
+            flex-shrink: 0;
+        }
+        .row.mel-row {
+            flex: 1;
+            flex-shrink: 1;
+            min-height: 0;
+        }
+        .label {
+            position: absolute;
+            left: 8px;
+            top: 4px;
+            font-size: 11px;
+            color: #666;
+            z-index: 5;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+        #content {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            min-height: 0;
+        }
+        .waveform { height: 80px; min-height: 80px; background: #1a1a1a; }
+        .mel {
+            position: relative;
+            height: 100%;
+            background: #1a1a1a;
+        }
+        .mel img {
+            width: 100%;
+            height: 100%;
+            object-fit: fill;
+            display: block;
+        }
+        .cursor {
+            position: absolute;
+            top: 0;
+            bottom: 0;
+            width: 1px;
+            background: #e55;
+            pointer-events: none;
+            z-index: 10;
+        }
+        .placeholder {
+            flex: 1;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: #444;
+            background: #1a1a1a;
+        }
+        .info {
+            margin-top: 10px;
+            font-size: 11px;
+            color: #555;
+            flex-shrink: 0;
+        }
+    </style>
+</head>
+<body>
+    <div class="sidebar">
+        <div class="sidebar-header">
+            <button id="loadBtn">+ Add</button>
+            <button id="clearBtn">Clear</button>
+            <input type="file" id="folderInput" webkitdirectory multiple style="display:none;">
+        </div>
+        <div class="tree" id="tree">
+            <div class="tree-empty">No folders loaded</div>
+        </div>
+    </div>
+
+    <div class="main">
+        <div class="controls">
+            <button id="playBtn" disabled>Play</button>
+            <button id="stopBtn" disabled>Stop</button>
+            <button id="soloRealBtn" disabled>Solo Real</button>
+            <button id="soloFakeBtn" disabled>Solo Fake</button>
+            <span class="time" id="time">0:00.00 / 0:00.00</span>
+        </div>
+
+        <div id="content">
+            <div class="placeholder">Select a folder from the sidebar</div>
+        </div>
+
+        <div class="info" id="info"></div>
+    </div>
+
+    <script>
+        let wsReal = null, wsFake = null, meta = null, playing = false, solo = null, seeking = false;
+        let folders = []; // Array of {name, files, meta}
+        let activeIndex = -1;
+
+        const $ = id => document.getElementById(id);
+
+        $('loadBtn').onclick = () => $('folderInput').click();
+        $('clearBtn').onclick = clearAll;
+        $('folderInput').onchange = addFolders;
+        $('playBtn').onclick = toggle;
+        $('stopBtn').onclick = stop;
+        $('soloRealBtn').onclick = () => setSolo('real');
+        $('soloFakeBtn').onclick = () => setSolo('fake');
+        document.onkeydown = e => {
+            if (e.target.matches('input')) return;
+            if (e.code === 'Space') { e.preventDefault(); toggle(); }
+            if (e.code === 'ArrowUp' && activeIndex > 0) { e.preventDefault(); selectFolder(activeIndex - 1); }
+            if (e.code === 'ArrowDown' && activeIndex < folders.length - 1) { e.preventDefault(); selectFolder(activeIndex + 1); }
+        };
+
+        async function addFolders(e) {
+            const files = [...e.target.files];
+            e.target.value = ''; // Reset for re-adding same folder
+
+            // Group files by their folder path
+            const folderMap = new Map();
+            for (const file of files) {
+                const parts = file.webkitRelativePath.split('/');
+                const folderName = parts.length > 1 ? parts[parts.length - 2] : 'unknown';
+                if (!folderMap.has(folderName)) folderMap.set(folderName, []);
+                folderMap.get(folderName).push(file);
+            }
+
+            // Process each folder
+            for (const [name, folderFiles] of folderMap) {
+                const metaFile = folderFiles.find(f => f.name === 'metadata.json');
+                if (!metaFile) continue;
+
+                const meta = JSON.parse(await metaFile.text());
+                folders.push({ name, files: folderFiles, meta });
+            }
+
+            renderTree();
+            if (folders.length > 0 && activeIndex === -1) selectFolder(0);
+        }
+
+        function clearAll() {
+            folders = [];
+            activeIndex = -1;
+            if (wsReal) { wsReal.destroy(); wsReal = null; }
+            if (wsFake) { wsFake.destroy(); wsFake = null; }
+            meta = null;
+            renderTree();
+            $('content').innerHTML = '<div class="placeholder">Select a folder from the sidebar</div>';
+            $('info').textContent = '';
+            $('playBtn').disabled = $('stopBtn').disabled = $('soloRealBtn').disabled = $('soloFakeBtn').disabled = true;
+        }
+
+        function renderTree() {
+            if (folders.length === 0) {
+                $('tree').innerHTML = '<div class="tree-empty">No folders loaded</div>';
+                return;
+            }
+            $('tree').innerHTML = folders.map((f, i) =>
+                `<div class="tree-item${i === activeIndex ? ' active' : ''}" data-index="${i}">${f.meta.name || f.meta.sample_id || f.name}</div>`
+            ).join('');
+            $('tree').querySelectorAll('.tree-item').forEach(el => {
+                el.onclick = () => selectFolder(parseInt(el.dataset.index));
+            });
+        }
+
+        async function selectFolder(index) {
+            if (index < 0 || index >= folders.length) return;
+            activeIndex = index;
+            renderTree();
+
+            const folder = folders[index];
+            meta = folder.meta;
+            const files = folder.files;
+
+            const realAudio = URL.createObjectURL(files.find(f => f.name === meta.files.real_audio));
+            const fakeAudio = URL.createObjectURL(files.find(f => f.name === meta.files.fake_audio));
+            const realMel = files.find(f => f.name === meta.files.real_mel);
+            const fakeMel = files.find(f => f.name === meta.files.fake_mel);
+
+            $('content').innerHTML = `
+                <div class="row"><span class="label">Original</span><div class="waveform" id="waveReal"></div></div>
+                <div class="row mel-row mel" id="melReal"><span class="label">Original Mel</span>${realMel ? `<img src="${URL.createObjectURL(realMel)}">` : ''}<div class="cursor" id="cursorReal"></div></div>
+                <div class="row mel-row mel" id="melFake"><span class="label">Reconstructed Mel</span>${fakeMel ? `<img src="${URL.createObjectURL(fakeMel)}">` : ''}<div class="cursor" id="cursorFake"></div></div>
+                <div class="row"><span class="label">Reconstructed</span><div class="waveform" id="waveFake"></div></div>
+            `;
+
+            if (wsReal) wsReal.destroy();
+            if (wsFake) wsFake.destroy();
+            playing = false;
+            solo = null;
+            $('soloRealBtn').classList.remove('active');
+            $('soloFakeBtn').classList.remove('active');
+            $('playBtn').textContent = 'Play';
+
+            wsReal = WaveSurfer.create({ container: '#waveReal', waveColor: '#4a9eff', progressColor: '#1e5aa8', cursorColor: '#e55', height: 80, normalize: true, url: realAudio });
+            wsFake = WaveSurfer.create({ container: '#waveFake', waveColor: '#4aff9e', progressColor: '#1ea85a', cursorColor: '#e55', height: 80, normalize: true, url: fakeAudio });
+
+            wsReal.on('seeking', t => { if (!seeking) { seeking = true; wsFake.seekTo(t / wsReal.getDuration()); seeking = false; } });
+            wsFake.on('seeking', t => { if (!seeking) { seeking = true; wsReal.seekTo(t / wsFake.getDuration()); seeking = false; } });
+            wsReal.on('play', () => { playing = true; $('playBtn').textContent = 'Pause'; if (solo !== 'fake') wsFake.play(); });
+            wsReal.on('pause', () => { if (!seeking) { playing = false; $('playBtn').textContent = 'Play'; wsFake.pause(); } });
+
+            await Promise.all([new Promise(r => wsReal.on('ready', r)), new Promise(r => wsFake.on('ready', r))]);
+            $('playBtn').disabled = $('stopBtn').disabled = $('soloRealBtn').disabled = $('soloFakeBtn').disabled = false;
+            $('info').textContent = `ID: ${meta.sample_id} | ${meta.duration.toFixed(2)}s | ${meta.sample_rate}Hz`;
+
+            $('melReal').onclick = e => seek(e, 'melReal');
+            $('melFake').onclick = e => seek(e, 'melFake');
+
+            (function update() {
+                if (wsReal && activeIndex === index) {
+                    const p = wsReal.getCurrentTime() / meta.duration * 100 + '%';
+                    if ($('cursorReal')) $('cursorReal').style.left = p;
+                    if ($('cursorFake')) $('cursorFake').style.left = p;
+                    $('time').textContent = `${fmt(wsReal.getCurrentTime())} / ${fmt(meta.duration)}`;
+                    requestAnimationFrame(update);
+                }
+            })();
+        }
+
+        function seek(e, id) {
+            const rect = $(id).getBoundingClientRect();
+            const t = (e.clientX - rect.left) / rect.width * meta.duration;
+            const wasPlaying = playing;
+            seeking = true;
+            wsReal.seekTo(t / wsReal.getDuration());
+            wsFake.seekTo(t / wsFake.getDuration());
+            seeking = false;
+            if (wasPlaying) wsReal.play();
+        }
+
+        function toggle() {
+            if (!wsReal) return;
+            playing ? wsReal.pause() : wsReal.play();
+        }
+
+        function stop() {
+            if (!wsReal) return;
+            wsReal.pause(); wsReal.seekTo(0); wsFake.seekTo(0);
+        }
+
+        function setSolo(mode) {
+            if (solo === mode) { solo = null; wsReal.setVolume(1); wsFake.setVolume(1); }
+            else { solo = mode; wsReal.setVolume(mode === 'real' ? 1 : 0); wsFake.setVolume(mode === 'fake' ? 1 : 0); }
+            $('soloRealBtn').classList.toggle('active', solo === 'real');
+            $('soloFakeBtn').classList.toggle('active', solo === 'fake');
+        }
+
+        function fmt(s) { return `${Math.floor(s/60)}:${(s%60).toFixed(2).padStart(5,'0')}`; }
+    </script>
+</body>
+</html>

@@ -141,14 +141,14 @@ class MPD(nn.Module):
             self.layers = [
                 nn.Conv2d(
                     in_channels=1,
-                    out_channels=16,
+                    out_channels=32,
                     kernel_size=(5, 1),
                     stride=(3, 1),
                     padding=(2, 0),
                 ),
                 nn.LeakyReLU(),
                 nn.Conv2d(
-                    in_channels=16,
+                    in_channels=32,
                     out_channels=64,
                     kernel_size=(5, 1),
                     stride=(3, 1),
@@ -157,6 +157,14 @@ class MPD(nn.Module):
                 nn.LeakyReLU(),
                 nn.Conv2d(
                     in_channels=64,
+                    out_channels=128,
+                    kernel_size=(5, 1),
+                    stride=(3, 1),
+                    padding=(2, 0),
+                ),
+                nn.LeakyReLU(),
+                nn.Conv2d(
+                    in_channels=128,
                     out_channels=256,
                     kernel_size=(5, 1),
                     stride=(3, 1),
@@ -165,22 +173,14 @@ class MPD(nn.Module):
                 nn.LeakyReLU(),
                 nn.Conv2d(
                     in_channels=256,
-                    out_channels=512,
-                    kernel_size=(5, 1),
-                    stride=(3, 1),
-                    padding=(2, 0),
-                ),
-                nn.LeakyReLU(),
-                nn.Conv2d(
-                    in_channels=512,
-                    out_channels=512,
+                    out_channels=256,
                     kernel_size=(5, 1),
                     stride=(1, 1),
                     padding=(2, 0),
                 ),
                 nn.LeakyReLU(),
                 nn.Conv2d(
-                    in_channels=512,
+                    in_channels=256,
                     out_channels=1,
                     kernel_size=(3, 1),
                     stride=(1, 1),
