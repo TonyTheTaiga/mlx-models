@@ -10,7 +10,7 @@ class Encoder(nn.Module):
         super().__init__()
 
         self.conv1 = nn.Conv1d(in_channels=in_dims, out_channels=512, kernel_size=7, padding=3)
-        self.bn1 = nn.LayerNorm(dims=512)
+        self.bn1 = nn.BatchNorm(512)
         self.convnext_blocks = nn.Sequential(
             *[ConvNeXtBlock(dim=512, expansion=4) for _ in range(8)]
         )
@@ -158,7 +158,6 @@ class Decoder(nn.Module):
         x = self.linear(x)
         bsz, seq_len, feat = x.shape
         waveform = mx.reshape(x, (bsz, seq_len * feat, 1))
-        waveform = mx.tanh(waveform)
         return waveform
 
 

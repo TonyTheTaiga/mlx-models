@@ -23,16 +23,64 @@ from training.speech_autoencoder.mels import MelSpectrogramConfig, MelSpectrogra
 from training.speech_autoencoder.utils import save_full_reconstruction
 
 
-def save_weights(out_dir: Path, ae: SpeechAutoEncoder, mrd: MRD, mpd: MPD) -> None:
+def save_weights(
+    out_dir: Path,
+    ae: SpeechAutoEncoder,
+    mrd: MRD,
+    mpd: MPD,
+    opt_g: optim.Optimizer,
+    opt_mrd: optim.Optimizer,
+    opt_mpd: optim.Optimizer,
+) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
     mx.eval(ae.parameters(), mrd.parameters(), mpd.parameters())
     ae.save_weights(str(out_dir / "ae_weights.npz"))
     mrd.save_weights(str(out_dir / "mrd_weights.npz"))
     mpd.save_weights(str(out_dir / "mpd_weights.npz"))
+    _save_optimizer_state(out_dir / "opt_g_state.npz", opt_g)
+    _save_optimizer_state(out_dir / "opt_mrd_state.npz", opt_mrd)
+    _save_optimizer_state(out_dir / "opt_mpd_state.npz", opt_mpd)
+
+
+def _save_optimizer_state(path: Path, opt: optim.Optimizer) -> None:
+    from mlx.utils import tree_flatten
+
+    flat_state = tree_flatten(opt.state)
+    if not flat_state:
+        return
+    arrays = {f"s{i}": v for i, (_, v) in enumerate(flat_state)}
+    mx.savez(str(path), **arrays)
+
+
+def _load_optimizer_state(path: Path, opt: optim.Optimizer) -> bool:
+    from mlx.utils import tree_flatten, tree_unflatten
+
+    if not path.exists():
+        return False
+    loaded = dict(mx.load(str(path)))
+    if not loaded:
+        return False
+    flat_state = tree_flatten(opt.state)
+    if len(flat_state) != len(loaded):
+        print(f"Warning: optimizer state size mismatch at {path}, skipping load")
+        return False
+    new_flat = [(k, loaded[f"s{i}"]) for i, (k, _) in enumerate(flat_state)]
+    opt.state = tree_unflatten(new_flat)
+    return True
+
+
+def _init_optimizer_state(opt: optim.Optimizer, model: nn.Module) -> None:
+    from mlx.utils import tree_map
+
+    params = model.parameters()
+    original = tree_map(lambda p: mx.array(p), params)
+    zero_grads = tree_map(lambda p: mx.zeros_like(p), params)
+    opt.update(model, zero_grads)
+    model.update(original)
+    mx.eval(model.parameters(), opt.state)
 
 
 def find_latest_checkpoint(output_dir: Path) -> tuple[Path | None, int]:
-    """Find the latest checkpoint directory and step number."""
     if not output_dir.exists():
         return None, 0
 
@@ -48,13 +96,19 @@ def find_latest_checkpoint(output_dir: Path) -> tuple[Path | None, int]:
     if not checkpoint_dirs:
         return None, 0
 
-    # Return the checkpoint with the highest step number
     checkpoint_dirs.sort(key=lambda x: x[1])
     return checkpoint_dirs[-1]
 
 
-def load_checkpoint(checkpoint_dir: Path, ae: SpeechAutoEncoder, mrd: MRD, mpd: MPD) -> None:
-    """Load weights from a checkpoint directory."""
+def load_checkpoint(
+    checkpoint_dir: Path,
+    ae: SpeechAutoEncoder,
+    mrd: MRD,
+    mpd: MPD,
+    opt_g: optim.Optimizer,
+    opt_mrd: optim.Optimizer,
+    opt_mpd: optim.Optimizer,
+) -> None:
     ae_weights_path = checkpoint_dir / "ae_weights.npz"
     mrd_weights_path = checkpoint_dir / "mrd_weights.npz"
     mpd_weights_path = checkpoint_dir / "mpd_weights.npz"
@@ -66,6 +120,19 @@ def load_checkpoint(checkpoint_dir: Path, ae: SpeechAutoEncoder, mrd: MRD, mpd: 
     mrd.load_weights(str(mrd_weights_path))
     mpd.load_weights(str(mpd_weights_path))
     mx.eval(ae.parameters(), mrd.parameters(), mpd.parameters())
+
+    _init_optimizer_state(opt_g, ae)
+    _init_optimizer_state(opt_mrd, mrd)
+    _init_optimizer_state(opt_mpd, mpd)
+
+    opt_g_loaded = _load_optimizer_state(checkpoint_dir / "opt_g_state.npz", opt_g)
+    opt_mrd_loaded = _load_optimizer_state(checkpoint_dir / "opt_mrd_state.npz", opt_mrd)
+    opt_mpd_loaded = _load_optimizer_state(checkpoint_dir / "opt_mpd_state.npz", opt_mpd)
+
+    if not all([opt_g_loaded, opt_mrd_loaded, opt_mpd_loaded]):
+        print("Warning: Some optimizer states not found, using fresh optimizer state")
+
+    mx.eval(opt_g.state, opt_mrd.state, opt_mpd.state)
 
 
 def compute_learning_rate(
@@ -289,23 +356,22 @@ def run_train(args: argparse.Namespace) -> None:
     )
 
     ae = SpeechAutoEncoder(in_dims=mel_cfg.n_mels, hidden_dims=24, out_dims=mel_cfg.hop_length)
-    mrd = MRD(fft_sizes=[192, 384, 768])
+    mrd = MRD(fft_sizes=[384, 768, 1536])
     mpd = MPD()
-
-    # Check for existing checkpoint
-    output_dir = Path("output")
-    checkpoint_path, start_step = find_latest_checkpoint(output_dir)
-    if checkpoint_path is not None:
-        print(f"Loading checkpoint from {checkpoint_path} (step {start_step})")
-        load_checkpoint(checkpoint_path, ae, mrd, mpd)
-    else:
-        start_step = 0
-        print("No checkpoint found, starting from scratch")
 
     opt_g = optim.AdamW(learning_rate=learning_rate)
     opt_mrd = optim.AdamW(learning_rate=disc_learning_rate)
     opt_mpd = optim.AdamW(learning_rate=disc_learning_rate)
     mx.eval(ae.parameters(), mrd.parameters(), mpd.parameters())
+
+    output_dir = Path("output")
+    checkpoint_path, start_step = find_latest_checkpoint(output_dir)
+    if checkpoint_path is not None:
+        print(f"Loading checkpoint from {checkpoint_path} (step {start_step})")
+        load_checkpoint(checkpoint_path, ae, mrd, mpd, opt_g, opt_mrd, opt_mpd)
+    else:
+        start_step = 0
+        print("No checkpoint found, starting from scratch")
     mrd_loss_and_grad_fn = nn.value_and_grad(mrd, mrd_loss_fn)
     mpd_loss_and_grad_fn = nn.value_and_grad(mpd, mpd_loss_fn)
     g_loss_and_grad_fn = nn.value_and_grad(ae, g_loss_fn)
@@ -351,22 +417,20 @@ def run_train(args: argparse.Namespace) -> None:
         )
         last_lr = lr
         set_optim_lr(opt_g, lr)
-        # set_optim_lr(opt_mrd, lr if disc_learning_rate == learning_rate else disc_learning_rate)
-        # set_optim_lr(opt_mpd, lr if disc_learning_rate == learning_rate else disc_learning_rate)
 
         batch = next(loader)
         mel = batch["mel"]
         real_waveform = batch["waveform"]
 
-        (g_loss_value, loss_dict), g_grads = g_loss_and_grad_fn(ae, mrd, mpd, mel, real_waveform)
-        opt_g.update(ae, g_grads)
-
-        fake_waveform = mx.stop_gradient(ae(mel))
-        mrd_d_loss, mrd_grads = mrd_loss_and_grad_fn(mrd, real_waveform, fake_waveform)
-        mpd_d_loss, mpd_grads = mpd_loss_and_grad_fn(mpd, real_waveform, fake_waveform)
-
+        fake_waveform = ae(mel)
+        fake_waveform_detached = mx.stop_gradient(fake_waveform)
+        mrd_d_loss, mrd_grads = mrd_loss_and_grad_fn(mrd, real_waveform, fake_waveform_detached)
+        mpd_d_loss, mpd_grads = mpd_loss_and_grad_fn(mpd, real_waveform, fake_waveform_detached)
         opt_mrd.update(mrd, mrd_grads)
         opt_mpd.update(mpd, mpd_grads)
+
+        (g_loss_value, loss_dict), g_grads = g_loss_and_grad_fn(ae, mrd, mpd, mel, real_waveform)
+        opt_g.update(ae, g_grads)
         mx.eval(
             ae.parameters(),
             mrd.parameters(),
@@ -414,17 +478,26 @@ def run_train(args: argparse.Namespace) -> None:
 
         if save_every > 0 and (step + 1) % save_every == 0:
             out_dir = Path("output") / f"step_{step + 1}"
+            random_sample_idx = random.randint(0, len(dataset) - 1)
             save_full_reconstruction(
                 dataset=dataset,
                 model=ae,
                 mel_cfg=mel_cfg,
                 sample_rate=sample_rate,
                 out_dir=out_dir,
-                sample_index=1,
+                sample_index=random_sample_idx,
                 chunk_frames=256,
-                overlap_frames=32,
+                overlap_frames=128,
             )
-            save_weights(out_dir=out_dir, ae=ae, mrd=mrd, mpd=mpd)
+            save_weights(
+                out_dir=out_dir,
+                ae=ae,
+                mrd=mrd,
+                mpd=mpd,
+                opt_g=opt_g,
+                opt_mrd=opt_mrd,
+                opt_mpd=opt_mpd,
+            )
 
     total_means = logger.total_mean()
     summary_rows = [
@@ -439,17 +512,26 @@ def run_train(args: argparse.Namespace) -> None:
     ]
     print("summary:\n" + format_table(summary_rows, ["metric", "value"]))
 
+    random_sample_idx = random.randint(0, len(dataset) - 1)
     save_full_reconstruction(
         dataset=dataset,
         model=ae,
         mel_cfg=mel_cfg,
         sample_rate=sample_rate,
         out_dir=Path("output") / "final",
-        sample_index=1,
+        sample_index=random_sample_idx,
         chunk_frames=256,
-        overlap_frames=32,
+        overlap_frames=128,
     )
-    save_weights(out_dir=Path("output") / "final", ae=ae, mrd=mrd, mpd=mpd)
+    save_weights(
+        out_dir=Path("output") / "final",
+        ae=ae,
+        mrd=mrd,
+        mpd=mpd,
+        opt_g=opt_g,
+        opt_mrd=opt_mrd,
+        opt_mpd=opt_mpd,
+    )
 
 
 def main() -> None:
