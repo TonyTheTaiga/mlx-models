@@ -41,7 +41,7 @@ def patchify(x: mx.array, win_size: int) -> mx.array:
 
 
 if __name__ == "__main__":
-    model = Vit(win_size=16)
-    dummy = mx.ones((16, 320, 320, 3))
+    model = Vit(win_size=4)
+    dummy = mx.ones((16, 28, 28, 1))
     patches = model.preprocess(dummy)
     print(patches.shape)
