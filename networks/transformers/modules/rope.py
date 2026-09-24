@@ -1,6 +1,7 @@
+from typing import final, override
+
 import mlx.nn as nn
 import mlx.core as mx
-from numpy import arange
 
 
 class Rope2D(nn.Module):
@@ -21,6 +22,8 @@ class Rope2D(nn.Module):
         col = pos % n_cols
         return mx.stack([row, col], axis=-1)
 
+    @final
+    @override
     def __call__(self, x: mx.array):
         """
         x (mx.array): (b, n_heads, num_patches, features per head)
