@@ -1,0 +1,16 @@
+model:
+  win_size: 7
+  n_layers: 4
+  patch_features: 49
+  d_model: 32
+  n_heads: 1
+
+training:
+  batch_size: 32
+  learning_rate: 0.001
+  steps: 3
+  epochs: 10
+
+dataset:
+  name: mnist
+  path: data/mnist
