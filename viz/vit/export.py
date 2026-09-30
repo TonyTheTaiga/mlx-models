@@ -3,7 +3,7 @@ Export a trained CIFAR-10 ViT checkpoint for Lumen, the in-browser evidence view
 
 Writes to viz/vit/web/assets/:
   weights.bin / weights.json  raw float32 tensors + {name: [offset, shape]} manifest
-  samples.bin / samples.json  uint8 test images (N, 32, 32, 3) + labels and class names
+  samples.bin / samples.json  uint8 test images (N, 32, 32, 3) + labels and MLX predictions
   reference.json              MLX logits for one sample per class, used by the page's self-check
 
 Usage: uv run python viz/vit/export.py [--checkpoint training/vit/checkpoints/cifar10]
@@ -79,11 +79,12 @@ def main():
     with open(OUT / "weights.json", "w") as f:
         json.dump({"config": config, "classes": class_names, "tensors": manifest}, f)
 
-    # Gallery samples.
+    # Gallery samples, with MLX's prediction for each so the gallery can mark mistakes.
     images, labels = load_split(data_root / "test", args.samples_per_class, seed=0)
     images.astype(np.uint8).tofile(OUT / "samples.bin")
+    preds = np.array(mx.argmax(model(mx.array(images.astype(np.float32) / 255.0)), -1))
     with open(OUT / "samples.json", "w") as f:
-        json.dump({"count": len(labels), "labels": labels.tolist()}, f)
+        json.dump({"count": len(labels), "labels": labels.tolist(), "preds": preds.tolist()}, f)
 
     # Reference outputs for the browser self-check: the first gallery image of every class.
     indices = [int(np.flatnonzero(labels == c)[0]) for c in np.unique(labels)]
@@ -92,7 +93,7 @@ def main():
     with open(OUT / "reference.json", "w") as f:
         json.dump({"indices": indices, "logits": np.array(logits).tolist()}, f)
 
-    acc = (np.array(mx.argmax(model(mx.array(images.astype(np.float32) / 255.0)), -1)) == labels)
+    acc = preds == labels
     print(f"Exported {len(manifest)} tensors ({offset * 4 / 1e6:.1f} MB), {len(labels)} samples")
     print(f"Gallery accuracy: {acc.mean():.1%}")
 

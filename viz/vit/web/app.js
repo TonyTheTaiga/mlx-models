@@ -11,7 +11,9 @@ import { evidence, curvePoints, currentK, predicted, drawFigure, drawChart, answ
 // ---------- state ----------
 const S = {
   cfg: null, classes: [],
-  samples: null, labels: [], sampleIndex: 0, source: null, label: null,
+  samples: null, labels: [], preds: [], sampleIndex: 0, source: null, label: null,
+  edited: false, // pixels differ from the source image, so its label may no longer apply
+  mistakesOnly: false,
   pixels: new Uint8ClampedArray(32 * 32 * 3),
   result: null, resultId: 0,
   occ: null, occWant: 0, curves: null, curvesWant: 0, curvesKey: "",
@@ -122,6 +124,7 @@ async function boot() {
   ]);
   S.samples = new Uint8Array(buf);
   S.labels = meta.labels;
+  S.preds = meta.preds ?? [];
   buildGallery();
   selectSample(Math.floor(Math.random() * meta.count));
   worker.postMessage({
@@ -141,7 +144,8 @@ function drawInput() {
   }
   inputCtx.putImageData(inputImage, 0, 0);
 }
-function pixelsChanged() {
+function pixelsChanged(edited = true) {
+  S.edited = edited;
   drawInput();
   requestForward();
 }
@@ -150,17 +154,20 @@ function setPixels(px, label = null) {
   S.source = { pixels: S.pixels.slice(), label };
   S.label = label;
   S.ev.cls = null;
-  pixelsChanged();
+  pixelsChanged(false);
 }
 function selectSample(i) {
   S.sampleIndex = i;
   setPixels(S.samples.subarray(i * 3072, (i + 1) * 3072), S.labels[i]);
-  document.querySelectorAll(".gallery canvas").forEach((c, k) => c.classList.toggle("on", k === i));
+  document.querySelectorAll(".gallery .thumb").forEach((c, k) => c.classList.toggle("on", k === i));
 }
 
+// Thumbnails marked by whether the model gets them right (predictions exported from MLX).
 function buildGallery() {
   const g = $("gallery");
   for (let i = 0; i < S.labels.length; i++) {
+    const b = document.createElement("button");
+    b.className = "thumb";
     const c = document.createElement("canvas");
     c.width = c.height = 32;
     const ctx = c.getContext("2d");
@@ -170,11 +177,26 @@ function buildGallery() {
       img.data[p * 4 + 3] = 255;
     }
     ctx.putImageData(img, 0, 0);
-    c.title = S.classes[S.labels[i]];
-    c.onclick = () => selectSample(i);
-    g.appendChild(c);
+    const label = S.classes[S.labels[i]], pred = S.preds[i];
+    const wrong = pred != null && pred !== S.labels[i];
+    b.classList.toggle("wrong", wrong);
+    b.title = pred == null ? label : wrong ? `${label} — model says ${S.classes[pred]}` : `${label} ✓`;
+    b.setAttribute("aria-label", b.title);
+    b.appendChild(c);
+    b.onclick = () => selectSample(i);
+    g.appendChild(b);
   }
+  if (S.preds.length) {
+    const right = S.preds.filter((p, i) => p === S.labels[i]).length;
+    $("galleryStat").textContent = `${right}/${S.labels.length} right`;
+  } else $("mistakes").hidden = true;
 }
+$("mistakes").onclick = () => {
+  S.mistakesOnly = !S.mistakesOnly;
+  $("mistakes").classList.toggle("on", S.mistakesOnly);
+  $("mistakes").setAttribute("aria-pressed", S.mistakesOnly);
+  $("gallery").classList.toggle("mistakes-only", S.mistakesOnly);
+};
 
 // Painting.
 const swatchColors = [[235, 230, 218], [16, 16, 20], [214, 64, 52], [238, 196, 62], [72, 150, 70], [74, 128, 214], [140, 96, 60]];
@@ -268,7 +290,7 @@ function loadFile(file) {
     const d = ctx.getImageData(0, 0, 32, 32).data;
     const px = new Uint8ClampedArray(3072);
     for (let i = 0; i < 1024; i++) for (let k = 0; k < 3; k++) px[i * 3 + k] = d[i * 4 + k];
-    document.querySelectorAll(".gallery canvas.on").forEach((x) => x.classList.remove("on"));
+    document.querySelectorAll(".gallery .thumb.on").forEach((x) => x.classList.remove("on"));
     setPixels(px, null);
     URL.revokeObjectURL(img.src);
   };
@@ -301,9 +323,10 @@ function buildControls() {
   };
   // Evidence for the prediction, or for the runner-up classes ("why not a cat?").
   const probs = S.result.probs;
-  const top3 = [...probs.keys()].sort((a, b) => probs[b] - probs[a]).slice(0, 3);
-  top3.forEach((c) =>
-    add(`<span class="dot" style="background:${rgba(CLASS_COLORS[c])}"></span>${S.classes[c]} ${(probs[c] * 100).toFixed(0)}%`,
+  const chips = [...probs.keys()].sort((a, b) => probs[b] - probs[a]).slice(0, 3);
+  if (S.label != null && !chips.includes(S.label)) chips.push(S.label);
+  chips.forEach((c) =>
+    add(`<span class="dot" style="background:${rgba(CLASS_COLORS[c])}"></span>${S.classes[c]} ${(probs[c] * 100).toFixed(0)}%${c === S.label ? " · label" : ""}`,
       c === (S.ev.cls ?? predicted(S)), () => { S.ev = { ...S.ev, cls: c === predicted(S) ? null : c, k: null }; ensureCurves(); buildControls(); },
       `evidence for ${S.classes[c]}`));
 
@@ -319,13 +342,23 @@ function buildControls() {
   box.appendChild(slider);
   const K = curvePoints(S);
   if (K && S.ev.k != null && S.ev.k !== K.best)
-    add(K.enough != null ? "↺ just enough" : "↺ strongest case", false, () => { S.ev.k = null; buildControls(); });
+    add(K.enough != null ? "↺ just enough" : K.flip != null ? "↺ flip point" : "↺ strongest case", false, () => { S.ev.k = null; buildControls(); });
   const spacer = document.createElement("span");
   spacer.className = "spacer";
   box.appendChild(spacer);
   add("signed map", S.ev.heat, () => { S.ev.heat = !S.ev.heat; buildControls(); }, "Color every patch by its evidence, for and against");
   invalidate();
 }
+
+// "Why not <true label>?" from the verdict.
+$("answer").onclick = (e) => {
+  const b = e.target.closest("button[data-cls]");
+  if (!b) return;
+  const c = +b.dataset.cls;
+  S.ev = { ...S.ev, cls: c === predicted(S) ? null : c, k: null };
+  ensureCurves();
+  buildControls();
+};
 
 addEventListener("keydown", (e) => {
   if (e.target.tagName === "INPUT" || !S.cfg) return;

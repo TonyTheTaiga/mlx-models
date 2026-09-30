@@ -5,6 +5,8 @@
   --paper: #ebe6da;
   --muted: #8b8676;
   --gold: #e9b965;
+  --good: #9fd98a;
+  --bad: #f08a77;
   --serif: "Fraunces", "Iowan Old Style", Georgia, serif;
   --mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
   color-scheme: dark;
@@ -101,22 +103,28 @@ kbd { font: inherit; border: 1px solid var(--line); border-radius: 3px; padding:
 .toggle { display: inline-flex; gap: 6px; align-items: center; color: var(--muted); margin-left: auto; cursor: pointer; }
 .toggle input { accent-color: var(--gold); }
 
+.gallery-head { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+.gallery-head h2 { margin: 0; }
+.gallery-head .stat { color: var(--muted); font-size: 10.5px; }
+.gallery-head button { margin-left: auto; font-size: 10.5px; padding: 2px 9px; }
 .gallery {
   display: grid;
   grid-template-columns: repeat(8, 1fr);
   gap: 3px;
 }
-.gallery canvas {
-  width: 100%;
-  aspect-ratio: 1;
-  image-rendering: pixelated;
-  border-radius: 2px;
-  cursor: pointer;
-  opacity: 0.72;
-  transition: opacity 0.15s, transform 0.15s;
+.thumb {
+  position: relative; display: block; padding: 0; border: none; border-radius: 2px;
+  background: none; opacity: 0.72; transition: opacity 0.15s, transform 0.15s;
 }
-.gallery canvas:hover { opacity: 1; transform: scale(1.12); }
-.gallery canvas.on { opacity: 1; outline: 1.5px solid var(--gold); outline-offset: 1px; }
+.thumb canvas { display: block; width: 100%; aspect-ratio: 1; image-rendering: pixelated; border-radius: 2px; }
+.thumb:hover { opacity: 1; transform: scale(1.12); z-index: 1; }
+.thumb.on { opacity: 1; outline: 1.5px solid var(--gold); outline-offset: 1px; }
+/* Mistakes: a red corner marker. */
+.thumb.wrong::after {
+  content: ""; position: absolute; top: -2px; right: -2px; width: 7px; height: 7px;
+  border-radius: 50%; background: var(--bad); box-shadow: 0 0 0 1.5px var(--ink);
+}
+.gallery.mistakes-only .thumb:not(.wrong) { display: none; }
 
 .stage {
   position: relative;
@@ -146,11 +154,36 @@ kbd { font: inherit; border: 1px solid var(--line); border-radius: 3px; padding:
 #figure { position: absolute; inset: 0; width: 100%; height: 100%; cursor: pointer; }
 
 .answer { display: flex; flex-direction: column; gap: 18px; min-height: 0; overflow-y: auto; }
-#answer .head { display: flex; align-items: baseline; gap: 12px; }
-#answer .cls { font: italic 400 40px/1 var(--serif); }
-#answer .pct { color: var(--gold); font-size: 13px; }
-#answer .sub { color: var(--muted); font-size: 11px; margin-top: 6px; }
-#answer .enough { display: flex; align-items: center; gap: 14px; margin-top: 22px; }
+#answer button { font-size: 11px; padding: 2px 10px; margin-left: 4px; }
+
+/* The verdict: what the model said against what the image is. */
+.verdict {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 10px 14px;
+  padding: 16px 16px 14px;
+  border: 1px solid var(--line); border-left: 3px solid var(--muted); border-radius: 8px;
+  background: rgba(235, 230, 218, 0.03);
+}
+.verdict.right { border-left-color: var(--good); background: rgba(159, 217, 138, 0.06); }
+.verdict.wrong { border-left-color: var(--bad); background: rgba(240, 138, 119, 0.08); }
+.verdict .side { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.verdict .k { font-size: 10px; text-transform: uppercase; letter-spacing: 0.14em; color: var(--muted); }
+.verdict .cls { font: italic 400 26px/1.1 var(--serif); white-space: nowrap; }
+.verdict .cls.none { color: var(--muted); }
+.verdict .note { font-size: 11px; color: var(--muted); }
+.verdict .badge {
+  grid-column: 1 / -1; justify-self: start;
+  font-size: 11px; font-weight: 500; padding: 1px 9px; border-radius: 999px;
+  border: 1px solid var(--line); color: var(--muted);
+}
+.verdict.right .badge { color: var(--good); border-color: rgba(159, 217, 138, 0.5); }
+.verdict.wrong .badge { color: var(--bad); border-color: rgba(240, 138, 119, 0.55); }
+#answer .miss { margin: 10px 0 0; font-size: 11.5px; color: var(--paper); opacity: 0.9; }
+#answer .ev-head {
+  margin-top: 24px; padding-top: 14px; border-top: 1px solid var(--line);
+  font-size: 11px; color: var(--muted);
+}
+#answer .ev-head b { font: italic 400 17px var(--serif); }
+#answer .enough { display: flex; align-items: center; gap: 14px; margin-top: 14px; }
 #answer .enough .n { font: 300 64px/0.9 var(--serif); color: var(--paper); }
 #answer .enough > span:last-child { font: italic 300 17px/1.25 var(--serif); color: var(--paper); }
 #answer .enough small { display: block; font: 11px/1.45 var(--mono); color: var(--muted); margin-top: 4px; font-style: normal; }

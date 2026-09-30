@@ -39,16 +39,19 @@ export function curvePoints(S) {
   const keep = Array.from({ length: n + 1 }, (_, k) => at(C.keep, k));
   const drop = Array.from({ length: n + 1 }, (_, k) => at(C.drop, k));
   // For the prediction: the smallest k whose kept patches alone still give the same answer at
-  // ≥ 80% of the confidence. For another class there's no answer to keep, so instead: the k
-  // where its best patches alone make the strongest case for it.
+  // ≥ 80% of the confidence. For another class there's no answer to keep, so instead: the
+  // smallest k whose patches alone flip the answer to it — or, if none do, the k where they make
+  // the strongest case.
   const pBase = S.result.probs[E.c];
-  let enough = null, peak = 1;
+  let enough = null, flip = null, peak = 1;
   if (E.c === predicted(S)) {
     enough = n;
     for (let k = 1; k <= n; k++) if (keep[k].top === E.c && keep[k].p >= 0.8 * pBase) { enough = k; break; }
+  } else {
+    for (let k = 1; k <= n; k++) if (keep[k].top === E.c) { flip = k; break; }
+    for (let k = 1; k <= n; k++) if (keep[k].p > keep[peak].p + 1e-6) peak = k;
   }
-  for (let k = 1; k <= n; k++) if (keep[k].p > keep[peak].p) peak = k;
-  return { keep, drop, enough, peak, best: enough ?? peak };
+  return { keep, drop, enough, flip, peak, best: enough ?? flip ?? peak };
 }
 
 export const currentK = (S) => {
@@ -131,7 +134,7 @@ export function drawChart(ctx, W, H, S) {
   const K = curvePoints(S);
   if (!K) return;
   const n = S.cfg.grid * S.cfg.grid, c = targetClass(S), col = CLASS_COLORS[c], k = currentK(S);
-  const pad = 6, X = (kk) => pad + (kk / n) * (W - 2 * pad), Y = (p) => pad + (1 - p) * (H - 2 * pad - 14);
+  const pad = 6, top = 18, X = (kk) => pad + (kk / n) * (W - 2 * pad), Y = (p) => top + (1 - p) * (H - top - pad - 14);
   ctx.strokeStyle = rgba(PAPER, 0.08); ctx.lineWidth = 1;
   for (const p of [0, 0.5, 1]) { ctx.beginPath(); ctx.moveTo(pad, Y(p)); ctx.lineTo(W - pad, Y(p)); ctx.stroke(); }
   const plot = (pts, color, dash) => {
@@ -141,35 +144,56 @@ export function drawChart(ctx, W, H, S) {
   plot(K.drop, rgba(PAPER, 0.55), [4, 3]);
   plot(K.keep, rgba(col, 0.95), []);
   ctx.strokeStyle = rgba(GOLD, 0.85);
-  ctx.beginPath(); ctx.moveTo(X(k), pad); ctx.lineTo(X(k), Y(0)); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(X(k), top); ctx.lineTo(X(k), Y(0)); ctx.stroke();
   ctx.fillStyle = rgba(col); ctx.beginPath(); ctx.arc(X(K.best), Y(K.keep[K.best].p), 4, 0, Math.PI * 2); ctx.fill();
   ctx.font = MONO; ctx.fillStyle = rgba(MUTED, 0.9); ctx.textBaseline = "alphabetic";
   ctx.textAlign = "left"; ctx.fillText("0", pad, H - 2);
   ctx.textAlign = "right"; ctx.fillText(`${n} patches`, W - pad, H - 2);
-  ctx.textAlign = "left"; ctx.fillText(`p(${S.classes[c]})`, pad + 2, pad + 10);
+  ctx.textAlign = "left"; ctx.fillText(`p(${S.classes[c]})`, pad, 10);
 }
 
 const clsSpan = (S, c) => `<b style="color:${rgba(CLASS_COLORS[c])}">${S.classes[c]}</b>`;
 
+// Model's answer against the ground truth, stated plainly before any evidence.
+function verdictHtml(S) {
+  const pred = predicted(S), known = S.label != null, right = known && S.label === pred;
+  const state = !known ? "unknown" : S.edited ? "edited" : right ? "right" : "wrong";
+  const badge = { right: "✓ right", wrong: "✗ wrong", edited: "✎ edited", unknown: "no label" }[state];
+  const side = (key, c, note) =>
+    `<div class="side"><span class="k">${key}</span>` +
+    (c == null ? `<span class="cls none">—</span>` : `<span class="cls" style="color:${rgba(CLASS_COLORS[c])}">${S.classes[c]}</span>`) +
+    `<span class="note">${note}</span></div>`;
+  let html = `<div class="verdict ${state}"><span class="badge">${badge}</span>` +
+    side("model says", pred, `${(S.result.probs[pred] * 100).toFixed(1)}% sure`) +
+    side("true label", known ? S.label : null, !known ? "your own image" : S.edited ? "of the image before your edits" : "from CIFAR-10") +
+    `</div>`;
+  if (known && !right) {
+    html += `<p class="miss">It gave ${S.classes[S.label]} only ${(S.result.probs[S.label] * 100).toFixed(1)}%.` +
+      (targetClass(S) === S.label ? "" : ` <button data-cls="${S.label}">why not ${S.classes[S.label]}? →</button>`) + `</p>`;
+  }
+  return html;
+}
+
 export function answerHtml(S) {
   if (!S.result) return "";
   const n = S.cfg.grid * S.cfg.grid, c = targetClass(S), E = evidence(S), K = curvePoints(S);
-  const chosen = S.ev.cls != null;
-  let truth = "";
-  if (S.label != null) truth = S.label === predicted(S) ? ` · label ${S.classes[S.label]} ✓` : ` · label ${S.classes[S.label]} ✗`;
-  let html = `<div class="head"><span class="cls" style="color:${rgba(CLASS_COLORS[c])}">${S.classes[c]}</span>` +
-    `<span class="pct">${(S.result.probs[c] * 100).toFixed(1)}%</span></div>` +
-    `<div class="sub">${chosen ? `evidence for a class the model didn't pick` : `the model's prediction${truth}`}</div>`;
+  let html = verdictHtml(S) +
+    `<div class="ev-head">evidence for <b style="color:${rgba(CLASS_COLORS[c])}">${S.classes[c]}</b>` +
+    (c === predicted(S) ? ", the model's answer" : `, not the model's answer · p = ${(S.result.probs[c] * 100).toFixed(1)}%`) +
+    (c !== predicted(S) ? ` <button data-cls="${predicted(S)}">back to ${S.classes[predicted(S)]}</button>` : "") + `</div>`;
   if (!E.ready) return html + `<p class="wait">testing each patch… ${E.done}/${n}</p>`;
   if (!K) return html + `<p class="wait">checking the ranking…</p>`;
   const k = currentK(S);
   if (K.enough != null)
     html += `<div class="enough"><span class="n">${K.enough}</span><span>of ${n} patches were enough` +
       `<small>keep only these and it still says ${S.classes[c]} at ≥80% of its confidence</small></span></div>`;
+  else if (K.flip != null)
+    html += `<div class="enough"><span class="n">${K.flip}</span><span>patches flip it to ${S.classes[c]}` +
+      `<small>keep only these and the model says ${S.classes[c]} (${(K.keep[K.flip].p * 100).toFixed(0)}%) instead of ${S.classes[predicted(S)]}</small></span></div>`;
   else {
-    const pk = K.keep[K.peak], wins = pk.top === c;
+    const pk = K.keep[K.peak];
     html += `<div class="enough"><span class="n">${(pk.p * 100).toFixed(0)}%</span><span>its strongest case for ${S.classes[c]}` +
-      `<small>keeping only its top ${K.peak} patches ${wins ? `makes the model say ${S.classes[c]}` : `raises p(${S.classes[c]}) from ${(S.result.probs[c] * 100).toFixed(1)}%, but it still says ${S.classes[pk.top]}`}</small></span></div>`;
+      `<small>no set of its top patches flips the answer; keeping the top ${K.peak} raises p(${S.classes[c]}) from ${(S.result.probs[c] * 100).toFixed(1)}%, but the model still says ${S.classes[pk.top]}</small></span></div>`;
   }
   const test = (label, pt) => `<div class="test"><span class="label">${label}</span>` +
     `<span class="res">${clsSpan(S, pt.top)} <span class="p">· ${S.classes[c]} ${(pt.p * 100).toFixed(0)}%</span></span></div>`;
