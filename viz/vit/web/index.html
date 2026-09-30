@@ -11,10 +11,10 @@
 </head>
 <body>
   <div class="app">
-    <aside class="panel left">
+    <aside class="panel">
       <header class="masthead">
         <h1>Lumen</h1>
-        <p class="sub">a vision transformer, seen from the inside</p>
+        <p class="sub">which patches did the model lean on?</p>
         <p class="meta" id="meta">loading weights…</p>
       </header>
 
@@ -31,7 +31,7 @@
               <button data-size="1">•</button>
               <button data-size="2">●</button>
             </div>
-            <label class="toggle"><input type="checkbox" id="showRollout" checked> rollout</label>
+            <label class="toggle"><input type="checkbox" id="showOverlay" checked> evidence</label>
           </div>
           <div class="row">
             <button id="reset">reset</button>
@@ -39,7 +39,7 @@
             <button id="flip">mirror</button>
             <label class="file">upload<input type="file" id="upload" accept="image/*"></label>
           </div>
-          <p class="note">Paint on the image. Hold <kbd>alt</kbd> to sample a color, or drop any picture on the page.</p>
+          <p class="note">Paint on the image and watch the evidence move. Hold <kbd>alt</kbd> to sample a color, or drop any picture on the page.</p>
         </div>
       </section>
 
@@ -47,37 +47,28 @@
         <h2>CIFAR-10 test images</h2>
         <div class="gallery" id="gallery"></div>
       </section>
-    </aside>
 
-    <main class="stage" id="stageWrap">
-      <canvas id="stage"></canvas>
-      <nav class="modes" id="modes">
-        <button data-mode="tower" class="on">Tower</button>
-        <button data-mode="atlas">Atlas</button>
-        <button data-mode="lineage">Lineage</button>
-        <button data-mode="drift">Drift</button>
-      </nav>
-      <div class="legend" id="legend"></div>
-      <div class="side">
-        <p class="hint" id="hint"></p>
-        <div class="reading" id="reading" hidden></div>
-      </div>
-      <div class="tooltip" id="tooltip" hidden></div>
-    </main>
-
-    <aside class="panel right">
-      <section>
-        <h2>Verdict</h2>
-        <canvas id="bloom"></canvas>
-        <div class="verdict" id="verdict"></div>
-      </section>
-      <section>
-        <h2>Depth lens</h2>
-        <p class="note">The classifier head read out from the CLS token after every block.</p>
-        <canvas id="lens"></canvas>
-      </section>
       <footer class="check" id="check">verifying against MLX…</footer>
     </aside>
+
+    <main class="stage">
+      <header class="question">
+        <h2>Which patches did the model lean on?</h2>
+        <p>Each patch is hidden in turn — flattened to the image's average color — and scored by how much the prediction's log-probability drops. The ranking is then put to the test: keep only the top patches, or remove them.</p>
+      </header>
+      <div class="evidence">
+        <div class="figure"><canvas id="figure"></canvas></div>
+        <section class="answer">
+          <div id="answer" aria-live="polite"></div>
+          <div class="chart">
+            <canvas id="chart"></canvas>
+            <p class="key"><span class="kept">— keep only the top k</span><span class="removed">┄ remove the top k</span></p>
+          </div>
+        </section>
+      </div>
+      <div class="controls" id="controls"></div>
+      <div class="tooltip" id="tooltip" hidden></div>
+    </main>
   </div>
   <div class="drop" id="drop">drop an image</div>
   <script type="module" src="app.js"></script>

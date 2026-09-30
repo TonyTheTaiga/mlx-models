@@ -1,67 +1,52 @@
-// Lumen — renders the ViT's residual stream and attention as light.
+// Lumen — which patches did the model lean on for its final prediction?
 //
-// Tower: the scrub accordion, one block open at a time — see tower.js.
-// Lineage: which image patches shaped one token — occlusion sweep vs. attention rollout.
-// Atlas: every head's attention map from the query, plus the residual stream mosaic.
-// Drift: the rotary positions each layer learned (they were left trainable).
+// The model runs in the browser (worker.js, a JS port of the MLX ViT). For the current image a
+// pool of workers hides each patch in turn and records the prediction (the occlusion sweep), then
+// checks the resulting ranking by keeping or removing the top-k patches (the curves). The
+// scoring, drawing and wording live in evidence.js.
 
-import { $, clamp, lerp, ease, frac, oklabToRgb, rgba, fit, HEAD_COLORS, CLASS_COLORS, GOLD, PAPER, layerColor } from "./util.js";
-import { drawTower, towerTooltip, readingHtml, traceInfluence, depthName, tokenName as nameOf } from "./tower.js";
-import { drawLineage, lineageTooltip, lineageHtml, lineage } from "./lineage.js";
+import { $, clamp, rgba, fit, CLASS_COLORS } from "./util.js";
+import { evidence, curvePoints, currentK, predicted, drawFigure, drawChart, answerHtml, tooltipHtml } from "./evidence.js";
 
 // ---------- state ----------
 const S = {
-  cfg: null, classes: [], rope: [], pca: null,
-  samples: null, labels: [], sampleIndex: 0, source: null,
+  cfg: null, classes: [],
+  samples: null, labels: [], sampleIndex: 0, source: null, label: null,
   pixels: new Uint8ClampedArray(32 * 32 * 3),
-  result: null, colors: null,
-  query: 0, head: -1, mode: "tower",
-  // Tower renders scrub; tower.js also keeps the loom/orbit/stack variants, unused in the UI.
-  variant: "scrub", block: 0,
-  subSteps: false, splitHeads: false, playing: false, playT: 0, midColors: null,
-  trace: false, traceK: 0, traceF: 0, // tracing a token back down to the pixels
-  lin: { k: 7, t: 0, method: "occlusion" }, occ: null, occWant: 0, occResult: -1, blockF: 0, resultId: 0,
-  yaw: -0.55, pitch: 0.42, dragging: false,
-  hover: null, pointer: null, driftPin: -1,
-  brush: 0, paint: [235, 230, 218], showRollout: true,
-  t: 0,
+  result: null, resultId: 0,
+  occ: null, occWant: 0, curves: null, curvesWant: 0, curvesKey: "",
+  ev: { cls: null, k: null, heat: false }, // target class (null = prediction), kept k (null = the headline k)
+  hover: null, pointer: null,
+  brush: 0, paint: [235, 230, 218], showOverlay: true,
 };
 
-// Draw on demand: only when something changed, or while a transition is running.
-let dirty = true, panelsDirty = true;
-function invalidate(panels = false) { dirty = true; if (panels) panelsDirty = true; }
+// Draw on demand: only when something changed.
+let dirty = true;
+const invalidate = () => (dirty = true);
 
-// ---------- worker ----------
+// ---------- the model ----------
 const worker = new Worker("worker.js", { type: "module" });
-let inflight = false, pending = false, reqId = 0;
+let inflight = false, pending = false;
 function requestForward() {
   if (!S.cfg) return;
   if (inflight) { pending = true; return; }
   inflight = true;
-  worker.postMessage({ type: "forward", id: ++reqId, pixels: S.pixels.slice() });
+  worker.postMessage({ type: "forward", pixels: S.pixels.slice() });
 }
 worker.onmessage = ({ data }) => {
   if (data.type === "ready") {
-    S.cfg = data.cfg; S.classes = data.classes; S.rope = data.rope;
-    S.block = S.blockF = data.cfg.layers - 1;
-    S.lin.k = data.cfg.layers + 1;
-    // Checkpoints trained after the Rope2D fix carry the untouched grid and frequencies.
-    const g = data.cfg.grid, nf = data.rope[0].freq.length;
-    S.ropeLearned = data.rope.some((L) =>
-      L.posIdx.some((v, i) => Math.abs(v - (i % 2 ? Math.floor(i / 2) % g : Math.floor(i / 2 / g))) > 1e-4) ||
-      L.freq.some((f, j) => Math.abs(f / Math.pow(100, -j / nf) - 1) > 1e-4));
+    S.cfg = data.cfg;
+    S.classes = data.classes;
     const c = S.cfg;
-    $("meta").textContent = `ViT · ${c.layers} blocks · ${c.heads} heads · d=${c.dModel} · ${c.grid}×${c.grid} patches of ${c.win}px · 2D RoPE · CIFAR-10`;
+    $("meta").textContent = `ViT · ${c.layers} blocks · ${c.heads} heads · ${c.grid}×${c.grid} patches of ${c.win}px · CIFAR-10`;
     boot();
   } else if (data.type === "result") {
     inflight = false;
     S.result = data.out;
-    S.colors = tokenColors(data.out.states);
-    S.midColors = tokenColors(data.out.mids, S.pcaMid);
     S.resultId++;
-    renderVerdict();
-    if (S.mode === "lineage") requestOcclusion();
-    invalidate(true);
+    S.ev.k = null; // back to the headline k for the new image
+    requestOcclusion();
+    buildControls();
     if (pending) { pending = false; requestForward(); }
   } else if (data.type === "check") {
     const ok = data.worst < 1e-3;
@@ -69,62 +54,75 @@ worker.onmessage = ({ data }) => {
   }
 };
 
-// Occlusion sweeps (64 forward passes) run on a small worker pool, off the painting worker, so
-// the page stays responsive; each worker takes every n-th patch.
-const occPool = Array.from({ length: clamp((navigator.hardwareConcurrency || 4) - 1, 1, 4) }, () => new Worker("worker.js", { type: "module" }));
-let occTimer = 0, occId = 0, occParts = null;
+// ---------- the sweeps, on a worker pool ----------
+// Each worker takes every n-th patch (or k) and returns only its share; parts sum without overlap.
+const pool = Array.from({ length: clamp((navigator.hardwareConcurrency || 4) - 1, 1, 4) }, () => new Worker("worker.js", { type: "module" }));
+let jobId = 0, occParts = null, curveParts = null, occTimer = 0;
+function mergeParts(parts) {
+  const out = new Float32Array(parts[0].length);
+  for (const part of parts) for (let j = 0; j < out.length; j++) out[j] += part[j];
+  return out;
+}
+const shares = (count, i) => [...Array(count).keys()].filter((x) => x % pool.length === i);
+
 function requestOcclusion() {
   clearTimeout(occTimer);
   // Debounced so a paint stroke only triggers one sweep once it settles.
   occTimer = setTimeout(() => {
-    S.occWant = ++occId;
-    S.occResult = S.resultId;
-    S.occ = { id: S.occWant, done: 0, data: null };
     const n = S.cfg.grid * S.cfg.grid;
-    occParts = { id: S.occWant, done: new Array(occPool.length).fill(0), data: [], left: occPool.length };
-    occPool.forEach((w, i) => {
-      const patches = [...Array(n).keys()].filter((p) => p % occPool.length === i);
-      w.postMessage({ type: "occlude", id: S.occWant, pixels: S.pixels.slice(), patches });
-    });
-    invalidate(true);
-  }, 300);
+    S.occWant = ++jobId;
+    S.occ = { id: S.occWant, done: 0, logits: null };
+    occParts = { id: S.occWant, done: new Array(pool.length).fill(0), logits: [], left: pool.length };
+    pool.forEach((w, i) => w.postMessage({ type: "occlude", id: S.occWant, pixels: S.pixels.slice(), patches: shares(n, i) }));
+    invalidate();
+  }, 250);
 }
-occPool.forEach((w, i) => {
+
+// The keep/remove check runs once per (sweep, target class), on the ranking that sweep produced.
+function ensureCurves() {
+  const E = evidence(S);
+  if (!E.ready) return;
+  const key = [S.occ.id, E.c].join();
+  if (key === S.curvesKey) return;
+  S.curvesKey = key;
+  S.curvesWant = ++jobId;
+  S.curves = { id: S.curvesWant, keep: null, drop: null };
+  curveParts = { id: S.curvesWant, keep: [], drop: [], left: pool.length };
+  const n = S.cfg.grid * S.cfg.grid;
+  pool.forEach((w, i) => w.postMessage({ type: "curves", id: S.curvesWant, pixels: S.pixels.slice(), order: E.order, ks: shares(n + 1, i) }));
+}
+
+pool.forEach((w, i) => {
   w.onmessage = ({ data }) => {
-    if (data.id !== S.occWant || !occParts || occParts.id !== data.id) return;
-    if (data.type === "occlusion-progress") occParts.done[i] = data.done;
-    else if (data.type === "occlusion") {
-      occParts.data[i] = data.data;
-      occParts.depths = data.depths;
-      occParts.left--;
-    } else return;
-    const done = occParts.done.reduce((a, b) => a + b, 0);
-    if (occParts.left > 0) S.occ = { id: data.id, done, data: null };
-    else {
-      // Each part only filled its own patches, so the parts sum without overlap.
-      const merged = new Float32Array(occParts.data[0].length);
-      for (const part of occParts.data) for (let j = 0; j < merged.length; j++) merged[j] += part[j];
-      S.occ = { id: data.id, done, data: merged, depths: occParts.depths };
+    if (data.type === "curves") {
+      if (!curveParts || data.id !== curveParts.id) return;
+      curveParts.keep[i] = data.keep;
+      curveParts.drop[i] = data.drop;
+      if (--curveParts.left === 0) {
+        S.curves = { id: data.id, keep: mergeParts(curveParts.keep), drop: mergeParts(curveParts.drop) };
+        buildControls(); // the slider starts at the headline k
+      }
+    } else {
+      if (!occParts || data.id !== occParts.id) return;
+      if (data.type === "occlusion-progress") occParts.done[i] = data.done;
+      else if (data.type === "occlusion") { occParts.logits[i] = data.logits; occParts.left--; }
+      const done = occParts.done.reduce((a, b) => a + b, 0);
+      S.occ = { id: data.id, done, logits: occParts.left === 0 ? mergeParts(occParts.logits) : null };
+      if (S.occ.logits) ensureCurves(); // start the check right away, even if nothing repaints
     }
-    invalidate(true);
+    invalidate();
   };
 });
 
 async function boot() {
-  const [pca, pcaMid, meta, buf, ref] = await Promise.all([
-    fetch("assets/pca.json").then((r) => r.json()),
-    fetch("assets/pca_mid.json").then((r) => r.json()),
+  const [meta, buf, ref] = await Promise.all([
     fetch("assets/samples.json").then((r) => r.json()),
     fetch("assets/samples.bin").then((r) => r.arrayBuffer()),
     fetch("assets/reference.json").then((r) => r.json()),
   ]);
-  S.pca = pca;
-  S.pcaMid = pcaMid;
   S.samples = new Uint8Array(buf);
   S.labels = meta.labels;
   buildGallery();
-  buildLegend();
-  // Start on a random, correctly-framed test image.
   selectSample(Math.floor(Math.random() * meta.count));
   worker.postMessage({
     type: "check",
@@ -133,42 +131,26 @@ async function boot() {
   });
 }
 
-// PCA false color per token per depth: component 1 → lightness, 2/3 → OKLab a/b.
-function tokenColors(states, bases = S.pca) {
-  const { nTokens: T, dModel: D } = S.cfg;
-  return states.map((x, d) => {
-    const { mean, components, lo, hi } = bases[d];
-    const out = [];
-    for (let t = 0; t < T; t++) {
-      const u = components.map((comp, k) => {
-        let s = 0;
-        for (let i = 0; i < D; i++) s += (x[t * D + i] - mean[i]) * comp[i];
-        return clamp((s - lo[k]) / (hi[k] - lo[k]), 0, 1);
-      });
-      out.push(oklabToRgb(0.38 + 0.46 * u[0], (u[1] - 0.5) * 0.34, (u[2] - 0.5) * 0.34));
-    }
-    return out;
-  });
-}
-
-// ---------- input image ----------
+// ---------- the input image ----------
 const inputCtx = $("input").getContext("2d");
 const inputImage = inputCtx.createImageData(32, 32);
 function drawInput() {
   for (let i = 0; i < 1024; i++) {
-    inputImage.data[i * 4] = S.pixels[i * 3];
-    inputImage.data[i * 4 + 1] = S.pixels[i * 3 + 1];
-    inputImage.data[i * 4 + 2] = S.pixels[i * 3 + 2];
+    for (let c = 0; c < 3; c++) inputImage.data[i * 4 + c] = S.pixels[i * 3 + c];
     inputImage.data[i * 4 + 3] = 255;
   }
   inputCtx.putImageData(inputImage, 0, 0);
+}
+function pixelsChanged() {
+  drawInput();
+  requestForward();
 }
 function setPixels(px, label = null) {
   S.pixels.set(px);
   S.source = { pixels: S.pixels.slice(), label };
   S.label = label;
-  drawInput();
-  requestForward();
+  S.ev.cls = null;
+  pixelsChanged();
 }
 function selectSample(i) {
   S.sampleIndex = i;
@@ -178,8 +160,7 @@ function selectSample(i) {
 
 function buildGallery() {
   const g = $("gallery");
-  const n = S.labels.length;
-  for (let i = 0; i < n; i++) {
+  for (let i = 0; i < S.labels.length; i++) {
     const c = document.createElement("canvas");
     c.width = c.height = 32;
     const ctx = c.getContext("2d");
@@ -210,10 +191,7 @@ function buildSwatches() {
   const pick = document.createElement("input");
   pick.type = "color";
   pick.title = "custom color";
-  pick.oninput = () => {
-    const h = pick.value;
-    setPaint([1, 3, 5].map((k) => parseInt(h.slice(k, k + 2), 16)), null);
-  };
+  pick.oninput = () => setPaint([1, 3, 5].map((k) => parseInt(pick.value.slice(k, k + 2), 16)), null);
   box.appendChild(pick);
 }
 function setPaint(c, btn) {
@@ -229,28 +207,24 @@ $("brush").onclick = (e) => {
 
 const frame = $("frame");
 let painting = false;
-function framePixel(e) {
-  const r = frame.getBoundingClientRect();
-  return [Math.floor(((e.clientX - r.left) / r.width) * 32), Math.floor(((e.clientY - r.top) / r.height) * 32)];
-}
 function paintAt(e) {
-  const [x, y] = framePixel(e);
+  const r = frame.getBoundingClientRect();
+  const x = Math.floor(((e.clientX - r.left) / r.width) * 32), y = Math.floor(((e.clientY - r.top) / r.height) * 32);
   if (e.altKey) {
     if (x < 0 || y < 0 || x > 31 || y > 31) return;
     const i = (y * 32 + x) * 3;
     setPaint([S.pixels[i], S.pixels[i + 1], S.pixels[i + 2]], null);
     return;
   }
-  const r = S.brush;
-  for (let dy = -r; dy <= r; dy++)
-    for (let dx = -r; dx <= r; dx++) {
-      if (dx * dx + dy * dy > r * r + r) continue;
+  const rad = S.brush;
+  for (let dy = -rad; dy <= rad; dy++)
+    for (let dx = -rad; dx <= rad; dx++) {
+      if (dx * dx + dy * dy > rad * rad + rad) continue;
       const px = x + dx, py = y + dy;
       if (px < 0 || py < 0 || px > 31 || py > 31) continue;
       S.pixels.set(S.paint, (py * 32 + px) * 3);
     }
-  drawInput();
-  requestForward();
+  pixelsChanged();
 }
 frame.addEventListener("pointerdown", (e) => { painting = true; frame.setPointerCapture(e.pointerId); paintAt(e); });
 frame.addEventListener("pointermove", (e) => painting && paintAt(e));
@@ -270,17 +244,15 @@ $("scramble").onclick = () => {
         S.pixels.set(src.subarray(a, a + 3), b);
       }
   });
-  drawInput();
-  requestForward();
+  pixelsChanged();
 };
 $("flip").onclick = () => {
   const src = S.pixels.slice();
   for (let y = 0; y < 32; y++)
     for (let x = 0; x < 32; x++) S.pixels.set(src.subarray((y * 32 + 31 - x) * 3, (y * 32 + 32 - x) * 3), (y * 32 + x) * 3);
-  drawInput();
-  requestForward();
+  pixelsChanged();
 };
-$("showRollout").onchange = (e) => { S.showRollout = e.target.checked; invalidate(true); };
+$("showOverlay").onchange = (e) => { S.showOverlay = e.target.checked; invalidate(); };
 
 // Uploads: center-crop and downsample to 32×32.
 function loadFile(file) {
@@ -314,654 +286,122 @@ addEventListener("drop", (e) => {
   loadFile(e.dataTransfer.files[0]);
 });
 
-// ---------- legend & modes ----------
-const HINTS = {
-  scrub: "Scroll or ↑↓ to move through depth. Only the active block opens: curves are attention into the query, the dotted line is its residual path. Click a block's tile to trace it back down to the image patches that shaped it (Esc to return), or a closed plate to open it. Space plays the query up through every block.",
-  loom: "Every token is a vertical thread, recolored at each depth. Attention is woven between rows — bright for the active block, a faint trace for the rest. Scroll or ↑↓ to change block.",
-  orbit: "Each ring is one depth, the image unwrapped around its center, with CLS at the heart. Threads spiral from one ring into the next. Scroll or ↑↓ to change block.",
-  stack: "The whole stack in 3D. Drag to orbit, scroll or ↑↓ to change the active block, click a tile to follow it.",
-  lineage: "Which image patches shaped this token? Occlusion blanks each patch in turn and measures how far the token moves; rollout follows attention paths. Click a patch to make it the target, a block below to change depth, ↑↓ to step.",
-  atlas: "Rows are blocks, columns are heads: where the query looks at each step. Last column is the residual stream itself. Click a patch to make it the query.",
-  drift: "RoPE positions were left trainable, so each block learned its own map of where the patches sit. The image is re-assembled at those learned coordinates.",
-  driftFixed: "This checkpoint's RoPE positions and frequencies are fixed, so every block uses the same grid — there is no drift to show.",
-};
-const tokenName = (t) => nameOf(S.cfg, t);
-
-function buildLegend() {
-  if (!S.cfg) return;
-  const L = $("legend");
-  L.innerHTML = "";
+// ---------- controls: target class, kept k, signed map ----------
+function buildControls() {
+  const box = $("controls");
+  box.innerHTML = "";
+  if (!S.result) return;
   const add = (html, on, onclick, label) => {
     const b = document.createElement("button");
     b.innerHTML = html;
-    if (label) b.setAttribute("aria-label", label), (b.title = label);
     b.classList.toggle("on", on);
     b.onclick = onclick;
-    L.appendChild(b);
+    if (label) b.setAttribute("aria-label", label), (b.title = label);
+    box.appendChild(b);
   };
-  if (S.mode === "drift") {
-    add("cycle", S.driftPin < 0, () => { S.driftPin = -1; buildLegend(); });
-    for (let l = 0; l < S.cfg.layers; l++)
-      add(`<span class="dot" style="background:${rgba(layerColor(l, S.cfg.layers))}"></span>block ${l + 1}`, S.driftPin === l, () => { S.driftPin = l; buildLegend(); });
-  } else if (S.mode === "lineage") {
-    const step = document.createElement("span");
-    step.className = "stepper";
-    step.innerHTML = `<button data-d="-1" aria-label="Shallower">‹</button><span>${depthName(S.lin.k)}</span><button data-d="1" aria-label="Deeper">›</button>`;
-    step.onclick = (e) => { const b = e.target.closest("button"); if (b) setLineage({ k: S.lin.k + +b.dataset.d }); };
-    L.appendChild(step);
-    add("occlusion", S.lin.method === "occlusion", () => setLineage({ method: "occlusion" }));
-    add("rollout", S.lin.method === "rollout", () => setLineage({ method: "rollout" }));
-    add("CLS", S.lin.t === 0, () => setLineage({ t: 0 }), "Target the CLS token");
-    const q = document.createElement("span");
-    q.className = "query";
-    q.innerHTML = `target <b>${tokenName(S.lin.t)}</b>`;
-    L.appendChild(q);
-  } else {
-    if (S.mode === "tower") {
-      const step = document.createElement("span");
-      step.className = "stepper";
-      step.innerHTML = `<button data-d="-1" aria-label="Previous block">‹</button><span>block <b>${S.block + 1}</b> / ${S.cfg.layers}</span><button data-d="1" aria-label="Next block">›</button>`;
-      step.onclick = (e) => { const b = e.target.closest("button"); if (b) userBlock(S.block + +b.dataset.d); };
-      L.appendChild(step);
-      add(S.playing ? "❚❚ pause" : "▶ play", S.playing, togglePlay);
-      add("attention → MLP", S.subSteps, () => { S.subSteps = !S.subSteps; buildLegend(); });
-      add("split heads", S.splitHeads, () => { S.splitHeads = !S.splitHeads; S.hover = null; buildLegend(); });
-    }
-    // In the head grid every panel is one head, so soloing doesn't apply.
-    if (!(S.mode === "tower" && S.splitHeads)) {
-      // Compact in the Tower, where the legend also holds the block controls.
-      const short = S.mode === "tower";
-      add(short ? "all" : "all heads", S.head < 0, () => setHead(-1), "all heads");
-      for (let h = 0; h < S.cfg.heads; h++)
-        add(`<span class="dot" style="background:${rgba(HEAD_COLORS[h])}"></span>${short ? "" : "head "}${h + 1}`, S.head === h, () => setHead(S.head === h ? -1 : h), `head ${h + 1}`);
-    }
-    if (S.mode === "tower" && S.trace) {
-      add(`tracing ${tokenName(S.query)} from ${depthName(S.traceK)} ✕`, true, endTrace, "Stop tracing");
-      add("open in Lineage ↗", false, () => { S.lin = { ...S.lin, k: S.traceK, t: S.query }; setMode("lineage"); });
-    } else {
-      const q = document.createElement("span");
-      q.className = "query";
-      q.innerHTML = `query <b>${tokenName(S.query)}</b>`;
-      L.appendChild(q);
-    }
-  }
-  $("hint").textContent = S.mode === "drift" && !S.ropeLearned ? HINTS.driftFixed : HINTS[S.mode === "tower" ? S.variant : S.mode];
-  invalidate(true);
+  // Evidence for the prediction, or for the runner-up classes ("why not a cat?").
+  const probs = S.result.probs;
+  const top3 = [...probs.keys()].sort((a, b) => probs[b] - probs[a]).slice(0, 3);
+  top3.forEach((c) =>
+    add(`<span class="dot" style="background:${rgba(CLASS_COLORS[c])}"></span>${S.classes[c]} ${(probs[c] * 100).toFixed(0)}%`,
+      c === (S.ev.cls ?? predicted(S)), () => { S.ev = { ...S.ev, cls: c === predicted(S) ? null : c, k: null }; ensureCurves(); buildControls(); },
+      `evidence for ${S.classes[c]}`));
+
+  const n = S.cfg.grid * S.cfg.grid, k = currentK(S);
+  const slider = document.createElement("label");
+  slider.className = "slider";
+  slider.innerHTML = `keep top <input type="range" min="1" max="${n}" value="${k}" aria-label="patches kept"> <b>${k}</b>`;
+  slider.querySelector("input").oninput = (e) => {
+    S.ev.k = +e.target.value;
+    slider.querySelector("b").textContent = e.target.value;
+    invalidate();
+  };
+  box.appendChild(slider);
+  const K = curvePoints(S);
+  if (K && S.ev.k != null && S.ev.k !== K.best)
+    add(K.enough != null ? "↺ just enough" : "↺ strongest case", false, () => { S.ev.k = null; buildControls(); });
+  const spacer = document.createElement("span");
+  spacer.className = "spacer";
+  box.appendChild(spacer);
+  add("signed map", S.ev.heat, () => { S.ev.heat = !S.ev.heat; buildControls(); }, "Color every patch by its evidence, for and against");
+  invalidate();
 }
-function setHead(h) { S.head = h; buildLegend(); }
-function setQuery(q) { S.query = q; buildLegend(); }
-// Play walks the query up through every block; any manual navigation stops it.
-function togglePlay() {
-  if (S.playing) { S.playing = false; buildLegend(); return; }
-  S.trace = false;
-  S.playing = true;
-  S.playT = 0;
-  if (S.block === S.cfg.layers - 1) setBlock(0);
-  buildLegend();
-}
-function userBlock(b) {
-  if (S.playing) { S.playing = false; buildLegend(); }
-  endTrace();
-  setBlock(b);
-}
-// Follow a token at depth k back down through every block to the image.
-function startTrace(k, t) {
-  if (S.playing) S.playing = false;
-  S.trace = true;
-  S.traceK = k;
-  S.query = t;
-  setBlock(k - 2);
-  buildLegend();
-}
-function endTrace() {
-  if (!S.trace) return;
-  S.trace = false;
-  buildLegend();
-}
-function setBlock(b) {
-  b = clamp(b, 0, S.cfg.layers - 1);
-  if (b !== S.block) { S.block = b; buildLegend(); }
-}
-function setMode(m) {
-  S.mode = m;
-  S.hover = null;
-  if (m === "lineage" && S.occResult !== S.resultId) requestOcclusion();
-  document.querySelectorAll("#modes button").forEach((b) => b.classList.toggle("on", b.dataset.mode === m));
-  buildLegend();
-}
-function setLineage(patch) {
-  S.lin = { ...S.lin, ...patch };
-  S.lin.k = clamp(S.lin.k, 2, S.cfg.layers + 1);
-  buildLegend();
-}
-$("modes").onclick = (e) => { const b = e.target.closest("button"); if (b) setMode(b.dataset.mode); };
 
 addEventListener("keydown", (e) => {
   if (e.target.tagName === "INPUT" || !S.cfg) return;
-  if (e.key === "Escape") S.trace ? endTrace() : setQuery(0);
-  else if (e.key === "0") setHead(-1);
-  else if (e.key >= "1" && e.key <= String(S.cfg.heads)) setHead(+e.key - 1);
-  else if (e.key === "t") setMode("tower");
-  else if (e.key === "a") setMode("atlas");
-  else if (e.key === "d") setMode("drift");
-  else if ((e.key === "ArrowUp" || e.key === "ArrowDown") && S.mode === "lineage") {
-    e.preventDefault();
-    setLineage({ k: S.lin.k + (e.key === "ArrowUp" ? 1 : -1) });
-  } else if ((e.key === "ArrowUp" || e.key === "ArrowDown") && S.mode === "tower") {
-    e.preventDefault();
-    userBlock(S.block + (e.key === "ArrowUp" ? 1 : -1));
-  } else if (e.key === " " && S.mode === "tower") {
-    e.preventDefault();
-    togglePlay();
-  } else if (e.key === "ArrowRight" || e.key === "ArrowLeft") {
+  if (e.key === "ArrowRight" || e.key === "ArrowLeft") {
     const n = S.labels.length;
     selectSample((S.sampleIndex + (e.key === "ArrowRight" ? 1 : n - 1)) % n);
   }
 });
 
-// The reading card: the active block's strongest sources, in words.
-let readingKey = "";
-function updateReading(wide) {
-  const el = $("reading");
-  el.hidden = (S.mode !== "tower" && S.mode !== "lineage") || !wide;
-  if (el.hidden) return;
-  const key = S.mode === "lineage"
-    ? ["lin", S.resultId, S.lin.k, S.lin.t, S.lin.method, S.occ?.id, S.occ?.done, !!S.occ?.data].join()
-    : [S.resultId, S.query, S.head, S.block, S.subSteps, S.trace, S.traceK].join();
-  if (key === readingKey) return;
-  readingKey = key;
-  el.innerHTML = S.mode === "lineage" ? lineageHtml(S) : readingHtml(S);
-  const { grid, win } = S.cfg;
-  el.querySelectorAll("canvas").forEach((c) => {
-    const t = +c.dataset.t, cx = c.getContext("2d");
-    if (t === 0) { cx.fillStyle = rgba(GOLD); cx.fillRect(1, 1, 2, 2); return; }
-    const r0 = Math.floor((t - 1) / grid) * win, c0 = ((t - 1) % grid) * win;
-    for (let i = 0; i < win; i++)
-      for (let j = 0; j < win; j++) {
-        const o = ((r0 + i) * 32 + c0 + j) * 3;
-        cx.fillStyle = `rgb(${S.pixels[o]},${S.pixels[o + 1]},${S.pixels[o + 2]})`;
-        cx.fillRect(j, i, 1, 1);
-      }
-  });
-}
-
-// ---------- atlas ----------
-function drawAtlas(ctx, W, H) {
-  const { grid, nTokens: T, layers, heads } = S.cfg;
-  const { attn } = S.result;
-  const cols = heads + 1;
-  const top = 70, bottom = 70, leftPad = 70;
-  const cell = Math.min((W - leftPad - 30) / cols, (H - top - bottom) / layers) * 0.9;
-  const gap = cell * 0.11;
-  const totalW = cols * cell + (cols - 1) * gap;
-  const x0 = leftPad + (W - leftPad - 30 - totalW) / 2;
-  const y0 = top + (H - top - bottom - (layers * cell + (layers - 1) * gap)) / 2;
-  const tile = cell / grid;
-  ctx.font = "10px 'JetBrains Mono', monospace";
-  ctx.textBaseline = "middle";
-
-  for (let c = 0; c < cols; c++) {
-    ctx.textAlign = "center";
-    ctx.fillStyle = c < heads ? rgba(HEAD_COLORS[c], S.head < 0 || S.head === c ? 0.95 : 0.35) : "rgba(235,230,218,0.7)";
-    ctx.fillText(c < heads ? `head ${c + 1}` : "stream", x0 + c * (cell + gap) + cell / 2, y0 - 16);
-  }
-
-  S.hover = null;
-  const [mx, my] = S.pointer || [-1, -1];
-  for (let l = 0; l < layers; l++) {
-    const y = y0 + l * (cell + gap);
-    ctx.textAlign = "right";
-    ctx.fillStyle = "rgba(235,230,218,0.7)";
-    ctx.fillText(`block ${l + 1}`, x0 - 14, y + cell / 2);
-    for (let c = 0; c < cols; c++) {
-      const x = x0 + c * (cell + gap);
-      ctx.globalCompositeOperation = "source-over";
-      if (c < heads) {
-        // Dim, desaturated image under a glow of attention weights.
-        for (let p = 0; p < grid * grid; p++) {
-          const r = Math.floor(p / grid), cc = p % grid;
-          const o = ((r * 4 + 2) * 32 + cc * 4 + 2) * 3;
-          const lum = (S.pixels[o] * 0.3 + S.pixels[o + 1] * 0.59 + S.pixels[o + 2] * 0.11) * 0.22;
-          ctx.fillStyle = `rgb(${lum},${lum},${lum + 4})`;
-          ctx.fillRect(x + cc * tile, y + r * tile, tile + 0.5, tile + 0.5);
-        }
-        const row = attn[l][c].subarray(S.query * T, S.query * T + T);
-        let max = 1e-6;
-        for (let j = 1; j < T; j++) max = Math.max(max, row[j]);
-        const dim = S.head >= 0 && S.head !== c ? 0.3 : 1;
-        ctx.globalCompositeOperation = "lighter";
-        for (let p = 0; p < grid * grid; p++) {
-          const v = (row[p + 1] / max) ** 0.8;
-          ctx.fillStyle = rgba(HEAD_COLORS[c], v * 0.95 * dim);
-          ctx.fillRect(x + (p % grid) * tile, y + Math.floor(p / grid) * tile, tile + 0.5, tile + 0.5);
-        }
-        // Share of attention spent on CLS: a bar under the cell.
-        ctx.globalCompositeOperation = "source-over";
-        ctx.fillStyle = "rgba(235,230,218,0.1)";
-        ctx.fillRect(x, y + cell + 3, cell, 2);
-        ctx.fillStyle = rgba(GOLD, 0.8 * dim);
-        ctx.fillRect(x, y + cell + 3, cell * row[0], 2);
-      } else {
-        const colors = S.colors[l + 1];
-        for (let p = 0; p < grid * grid; p++) {
-          ctx.fillStyle = rgba(colors[p + 1]);
-          ctx.fillRect(x + (p % grid) * tile, y + Math.floor(p / grid) * tile, tile + 0.5, tile + 0.5);
-        }
-      }
-      ctx.globalCompositeOperation = "source-over";
-      if (S.query > 0) {
-        const q = S.query - 1;
-        ctx.strokeStyle = rgba(GOLD, 0.95);
-        ctx.lineWidth = 1.2;
-        ctx.strokeRect(x + (q % grid) * tile + 0.5, y + Math.floor(q / grid) * tile + 0.5, tile - 1, tile - 1);
-      }
-      if (mx >= x && mx < x + cell && my >= y && my < y + cell) {
-        const p = Math.floor((my - y) / tile) * grid + Math.floor((mx - x) / tile);
-        S.hover = { kind: "atlas", layer: l, head: c, patch: p, token: p + 1 };
-        ctx.strokeStyle = rgba(PAPER, 0.9);
-        ctx.strokeRect(x + (p % grid) * tile + 0.5, y + Math.floor(p / grid) * tile + 0.5, tile - 1, tile - 1);
-      }
-    }
-  }
-  ctx.textAlign = "left";
-  ctx.fillStyle = "rgba(139,134,118,0.9)";
-  ctx.fillText("gold bar = share of attention spent on CLS", x0, y0 + layers * (cell + gap) + 8);
-
-  if (S.hover) {
-    const { layer, head, token } = S.hover;
-    let text = `<b>block ${layer + 1}</b> · ${tokenName(token)}`;
-    if (head < heads) text += ` · head ${head + 1} · ${tokenName(S.query)} → here ${(attn[layer][head][S.query * T + token] * 100).toFixed(1)}%`;
-    showTooltip(text);
-  } else hideTooltip();
-}
-
-// ---------- drift ----------
-function drawDrift(ctx, W, H) {
-  const { grid, win, layers } = S.cfg;
-  const rope = S.rope;
-  let lo = 0, hi = grid - 1;
-  for (const L of rope) for (const v of L.posIdx) { lo = Math.min(lo, v); hi = Math.max(hi, v); }
-  lo -= 0.9; hi += 0.9;
-  const fw = clamp(W * 0.2, 150, 220), fh = 120;
-  const size = Math.max(160, Math.min(W - fw - 110, H - 170));
-  const ox = (W - (size + 50 + fw)) / 2, oy = (H - size) / 2 + 14;
-  const unit = size / (hi - lo);
-  const to = (row, col) => [ox + (col - lo) * unit, oy + (row - lo) * unit];
-
-  // Animate through the blocks (or hold a pinned one).
-  let cur, l0, l1, e;
-  if (S.driftPin >= 0) { l0 = l1 = S.driftPin; e = 0; cur = S.driftPin; }
-  else {
-    cur = (S.t * 0.22) % layers;
-    l0 = Math.floor(cur); l1 = (l0 + 1) % layers;
-    e = ease(clamp((frac(cur) - 0.55) / 0.45, 0, 1));
-  }
-
-  // The lattice RoPE was initialized with.
-  ctx.fillStyle = "rgba(235,230,218,0.22)";
-  for (let r = 0; r < grid; r++)
-    for (let c = 0; c < grid; c++) {
-      const [x, y] = to(r, c);
-      ctx.beginPath();
-      ctx.arc(x, y, 1.3, 0, Math.PI * 2);
-      ctx.fill();
-    }
-
-  // Every block's learned mesh, faint.
-  ctx.globalCompositeOperation = "lighter";
-  rope.forEach((L, l) => {
-    const pos = (p) => to(L.posIdx[2 * p], L.posIdx[2 * p + 1]);
-    const active = S.driftPin >= 0 ? l === S.driftPin : l === (e > 0.5 ? l1 : l0);
-    ctx.strokeStyle = rgba(layerColor(l, layers), active ? 0.55 : 0.14);
-    ctx.lineWidth = active ? 1.1 : 0.8;
-    ctx.beginPath();
-    for (let r = 0; r < grid; r++)
-      for (let c = 0; c < grid; c++) {
-        const p = r * grid + c;
-        const a = pos(p);
-        if (c + 1 < grid) { const b = pos(p + 1); ctx.moveTo(a[0], a[1]); ctx.lineTo(b[0], b[1]); }
-        if (r + 1 < grid) { const b = pos(p + grid); ctx.moveTo(a[0], a[1]); ctx.lineTo(b[0], b[1]); }
-      }
-    ctx.stroke();
-  });
-  ctx.globalCompositeOperation = "source-over";
-
-  // The image, re-assembled at the learned coordinates.
-  const P0 = rope[l0].posIdx, P1 = rope[l1].posIdx;
-  const sq = unit * 0.9;
-  const px = sq / win;
-  S.hover = null;
-  const [mx, my] = S.pointer || [-1, -1];
-  for (let p = 0; p < grid * grid; p++) {
-    const row = lerp(P0[2 * p], P1[2 * p], e), col = lerp(P0[2 * p + 1], P1[2 * p + 1], e);
-    const [cx, cy] = to(row, col);
-    const r0 = Math.floor(p / grid) * win, c0 = (p % grid) * win;
-    for (let i = 0; i < win; i++)
-      for (let j = 0; j < win; j++) {
-        const o = ((r0 + i) * 32 + c0 + j) * 3;
-        ctx.fillStyle = `rgba(${S.pixels[o]},${S.pixels[o + 1]},${S.pixels[o + 2]},0.93)`;
-        ctx.fillRect(cx - sq / 2 + j * px, cy - sq / 2 + i * px, px + 0.4, px + 0.4);
-      }
-    if (Math.abs(mx - cx) < sq / 2 && Math.abs(my - cy) < sq / 2) {
-      S.hover = { kind: "drift", patch: p, row, col };
-      ctx.strokeStyle = rgba(PAPER, 0.9);
-      ctx.strokeRect(cx - sq / 2, cy - sq / 2, sq, sq);
-    }
-  }
-
-  // Title.
-  const shown = S.driftPin >= 0 ? S.driftPin : e > 0.5 ? l1 : l0;
-  ctx.textAlign = "left";
-  ctx.textBaseline = "alphabetic";
-  ctx.fillStyle = rgba(layerColor(shown, layers));
-  ctx.font = "italic 300 30px Fraunces, Georgia, serif";
-  ctx.fillText(`block ${shown + 1}`, ox, oy - 18);
-  ctx.fillStyle = "rgba(139,134,118,0.9)";
-  ctx.font = "10px 'JetBrains Mono', monospace";
-  ctx.fillText(S.ropeLearned
-    ? "where this block's RoPE believes each patch sits · dots = the lattice it started from"
-    : "fixed RoPE: positions sit exactly on the lattice in every block", ox, oy - 4);
-
-  // Learned rotary frequencies vs. the 100^(-j/n) they were initialized to.
-  const fx = ox + size + 50, fy = oy + size - fh;
-  const nf = rope[0].freq.length;
-  const ly = (f) => fy + fh - clamp((Math.log10(Math.max(f, 1e-3)) + 2.2) / 2.5, 0, 1) * fh;
-  const lx = (i) => fx + (i / (nf - 1)) * fw;
-  ctx.strokeStyle = "rgba(235,230,218,0.1)";
-  ctx.strokeRect(fx, fy, fw, fh);
-  ctx.setLineDash([3, 3]);
-  ctx.strokeStyle = "rgba(235,230,218,0.5)";
-  ctx.beginPath();
-  for (let i = 0; i < nf; i++) ctx[i ? "lineTo" : "moveTo"](lx(i), ly(Math.pow(100, -i / nf)));
-  ctx.stroke();
-  ctx.setLineDash([]);
-  rope.forEach((L, l) => {
-    ctx.strokeStyle = rgba(layerColor(l, layers), l === shown ? 1 : 0.35);
-    ctx.lineWidth = l === shown ? 1.8 : 1;
-    ctx.beginPath();
-    L.freq.forEach((f, i) => ctx[i ? "lineTo" : "moveTo"](lx(i), ly(Math.abs(f))));
-    ctx.stroke();
-  });
-  ctx.fillStyle = "rgba(139,134,118,0.9)";
-  ctx.fillText("RoPE freqs (log) · dashed = init", fx, fy - 8);
-
-  if (S.hover) {
-    const { patch, row, col } = S.hover;
-    showTooltip(`<b>${tokenName(patch + 1)}</b> · learned at (${row.toFixed(2)}, ${col.toFixed(2)})`);
-  } else hideTooltip();
-}
-
-// ---------- verdict ----------
-function renderVerdict() {
-  const { probs } = S.result;
-  const order = [...probs.keys()].sort((a, b) => probs[b] - probs[a]);
-  const top = order[0];
-  let html = `<div class="top" style="color:${rgba(CLASS_COLORS[top])}">${S.classes[top]}</div>`;
-  html += `<div class="pct">${(probs[top] * 100).toFixed(1)}%</div>`;
-  html += `<div class="runners">${order.slice(1, 4).map((c) => `${S.classes[c]} ${(probs[c] * 100).toFixed(0)}%`).join(" · ")}</div>`;
-  if (S.label != null) {
-    const hit = S.label === top;
-    html += `<div class="truth ${hit ? "hit" : "miss"}">label · <b>${S.classes[S.label]}</b> ${hit ? "✓" : "✗"}</div>`;
-  }
-  $("verdict").innerHTML = html;
-}
-
-function drawBloom(ctx, W, H) {
-  const probs = S.result.probs;
-  const cx = W / 2, cy = H / 2, R = Math.min(W, H) * 0.34;
-  const n = probs.length;
-  const top = probs.indexOf(Math.max(...probs));
-  ctx.strokeStyle = "rgba(235,230,218,0.07)";
-  for (const f of [0.25, 0.5, 0.75, 1]) {
-    ctx.beginPath();
-    ctx.arc(cx, cy, R * (0.1 + 0.9 * Math.sqrt(f)), 0, Math.PI * 2);
-    ctx.stroke();
-  }
-  ctx.globalCompositeOperation = "lighter";
-  for (let c = 0; c < n; c++) {
-    const p = probs[c];
-    const ang = -Math.PI / 2 + (c / n) * Math.PI * 2;
-    const len = R * (0.1 + 0.9 * Math.sqrt(p));
-    const w = R * 0.2 * (0.35 + 0.65 * Math.sqrt(p));
-    ctx.save();
-    ctx.translate(cx, cy);
-    ctx.rotate(ang);
-    const g = ctx.createLinearGradient(0, 0, len, 0);
-    g.addColorStop(0, rgba(CLASS_COLORS[c], 0.04));
-    g.addColorStop(1, rgba(CLASS_COLORS[c], 0.3 + 0.65 * Math.sqrt(p)));
-    ctx.fillStyle = g;
-    ctx.beginPath();
-    ctx.moveTo(0, 0);
-    ctx.bezierCurveTo(len * 0.35, -w, len * 0.8, -w * 0.7, len, 0);
-    ctx.bezierCurveTo(len * 0.8, w * 0.7, len * 0.35, w, 0, 0);
-    ctx.fill();
-    ctx.restore();
-  }
-  ctx.globalCompositeOperation = "source-over";
-  ctx.font = "10px 'JetBrains Mono', monospace";
-  ctx.textBaseline = "middle";
-  for (let c = 0; c < n; c++) {
-    const ang = -Math.PI / 2 + (c / n) * Math.PI * 2;
-    const x = cx + Math.cos(ang) * (R + 14), y = cy + Math.sin(ang) * (R + 14);
-    ctx.textAlign = Math.abs(Math.cos(ang)) < 0.2 ? "center" : Math.cos(ang) > 0 ? "left" : "right";
-    ctx.fillStyle = c === top ? rgba(CLASS_COLORS[c]) : "rgba(139,134,118,0.85)";
-    ctx.fillText(S.classes[c], x, y);
-  }
-}
-
-function drawLens(ctx, W, H) {
-  const lens = S.result.lens;
-  const n = lens.length, C = lens[0].length;
-  const top = S.result.probs.indexOf(Math.max(...S.result.probs));
-  const padL = 4, padR = 4, padT = 4, padB = 22;
-  const x = (d) => padL + (d / (n - 1)) * (W - padL - padR);
-  const y = (v) => padT + v * (H - padT - padB);
-  // Stack classes with the final winner on top so its ribbon reads clearly.
-  const order = [...Array(C).keys()].filter((c) => c !== top).concat(top);
-  const base = new Array(n).fill(0);
-  const bands = order.map((c) => {
-    const lo = base.slice();
-    for (let d = 0; d < n; d++) base[d] += lens[d][c];
-    return { c, lo, hi: base.slice() };
-  });
-  const smooth = (pts, move) => {
-    pts.forEach(([px, py], i) => {
-      if (i === 0) { ctx[move ? "moveTo" : "lineTo"](px, py); return; }
-      const [ax, ay] = pts[i - 1];
-      const mx = (ax + px) / 2;
-      ctx.bezierCurveTo(mx, ay, mx, py, px, py);
-    });
-  };
-  for (const { c, lo, hi } of bands) {
-    const upper = hi.map((v, d) => [x(d), y(v)]);
-    const lower = lo.map((v, d) => [x(d), y(v)]).reverse();
-    ctx.beginPath();
-    smooth(upper, true);
-    smooth(lower, false);
-    ctx.closePath();
-    ctx.fillStyle = rgba(CLASS_COLORS[c], c === top ? 0.9 : 0.28);
-    ctx.fill();
-  }
-  ctx.font = "10px 'JetBrains Mono', monospace";
-  ctx.textBaseline = "alphabetic";
-  ctx.fillStyle = "rgba(139,134,118,0.9)";
-  for (let d = 0; d < n; d++) {
-    ctx.textAlign = d === 0 ? "left" : d === n - 1 ? "right" : "center";
-    ctx.fillText(d === 0 ? "embed" : String(d), x(d), H - 6);
-  }
-}
-
-// ---------- tooltip & stage input ----------
-const tooltip = $("tooltip");
-function showTooltip(html) {
-  if (!S.pointer) return;
-  tooltip.hidden = false;
-  if (tooltip.innerHTML !== html) tooltip.innerHTML = html;
-  const w = tooltip.offsetWidth;
-  // Flip to the left of the pointer before running into the stage edge or the reading card.
-  let right = $("stageWrap").clientWidth;
-  const card = $("reading");
-  if (!card.hidden) right = Math.min(right, card.getBoundingClientRect().left - $("stageWrap").getBoundingClientRect().left);
-  const x = Math.max(8, S.pointer[0] + w + 30 > right ? S.pointer[0] - w - 28 : S.pointer[0]);
-  tooltip.style.left = `${x}px`;
-  tooltip.style.top = `${S.pointer[1]}px`;
-}
-function hideTooltip() { tooltip.hidden = true; }
-
-const stage = $("stage");
-let drag = null;
-stage.addEventListener("pointermove", (e) => {
-  const r = stage.getBoundingClientRect();
+// ---------- the figure: hover and click ----------
+const figure = $("figure"), tooltip = $("tooltip");
+figure.addEventListener("pointermove", (e) => {
+  const r = figure.getBoundingClientRect();
   S.pointer = [e.clientX - r.left, e.clientY - r.top];
-  if (drag) {
-    const dx = e.clientX - drag.x, dy = e.clientY - drag.y;
-    if (Math.abs(dx) + Math.abs(dy) > 3) { S.dragging = true; stage.classList.add("dragging"); }
-    if (S.dragging && S.mode === "tower" && S.variant === "stack") {
-      S.yaw = drag.yaw + dx * 0.006;
-      S.pitch = clamp(drag.pitch + dy * 0.004, 0.12, 1.2);
-    }
-  }
-});
-stage.addEventListener("pointermove", () => invalidate());
-stage.addEventListener("pointerleave", () => { S.pointer = null; S.hover = null; hideTooltip(); invalidate(); });
-let wheelAcc = 0;
-stage.addEventListener("wheel", (e) => {
-  if (S.mode !== "tower") return;
-  e.preventDefault();
-  wheelAcc += e.deltaY;
-  // Scrolling up climbs the tower toward deeper blocks.
-  if (Math.abs(wheelAcc) > 60) { userBlock(S.block - Math.sign(wheelAcc)); wheelAcc = 0; }
-}, { passive: false });
-stage.addEventListener("pointerdown", (e) => {
-  stage.setPointerCapture(e.pointerId);
-  const r = stage.getBoundingClientRect();
-  S.pointer = [e.clientX - r.left, e.clientY - r.top];
-  drag = { x: e.clientX, y: e.clientY, yaw: S.yaw, pitch: S.pitch };
   invalidate();
 });
-stage.addEventListener("pointerup", () => {
-  // Resolved after the next draw, which is where hover hit-testing happens.
-  if (!S.dragging) S.click = true;
-  drag = null;
-  S.dragging = false;
-  stage.classList.remove("dragging");
+figure.addEventListener("pointerleave", () => { S.pointer = null; S.hover = null; tooltip.hidden = true; invalidate(); });
+figure.addEventListener("click", () => {
+  // Clicking a patch keeps everything down to its rank.
+  const E = evidence(S);
+  if (!S.hover || !E.ready) return;
+  S.ev.k = E.order.indexOf(S.hover.p) + 1;
+  buildControls();
 });
-function handleClick() {
-  S.click = false;
-  const h = S.hover;
-  if (S.mode === "tower") {
-    // A token becomes the query, and the block that produced its depth becomes active.
-    if (!h) return endTrace();
-    if (h.kind === "ghost") return userBlock(Math.max(0, h.k - 2));
-    if (h.k >= 2 && !h.mid) return startTrace(h.k, h.t);
-    if (h.k >= 1) userBlock(Math.max(0, h.k - 2));
-    setQuery(h.t);
-  } else if (S.mode === "lineage") {
-    if (h?.kind === "lin-patch") setLineage({ t: h.p + 1 });
-    else if (h?.kind === "lin-cls") setLineage({ t: 0 });
-    else if (h?.kind === "lin-depth") setLineage({ k: h.k });
-  } else if (S.mode === "atlas") {
-    if (h) setQuery(h.token === S.query ? 0 : h.token);
-    else setQuery(0);
-  }
+function placeTooltip(html) {
+  if (!html || !S.pointer) { tooltip.hidden = true; return; }
+  tooltip.hidden = false;
+  if (tooltip.innerHTML !== html) tooltip.innerHTML = html;
+  const fr = figure.getBoundingClientRect(), st = figure.closest(".stage").getBoundingClientRect();
+  const x = fr.left - st.left + S.pointer[0], y = fr.top - st.top + S.pointer[1];
+  const w = tooltip.offsetWidth;
+  tooltip.style.left = `${Math.max(8, x + w + 30 > st.width ? x - w - 28 : x)}px`;
+  tooltip.style.top = `${y}px`;
 }
 
-// ---------- input overlay: rollout ----------
+// ---------- the input overlay: support for the target class ----------
 function drawOverlay(ctx, W, H) {
-  if (!S.showRollout) return;
-  const { grid, nTokens: T } = S.cfg;
-  // While tracing, show the traced token's own lineage; otherwise full rollout from the top.
-  let traced = S.mode === "tower" && S.trace ? traceInfluence(S)[1] : null;
-  if (S.mode === "lineage") {
-    const L = lineage(S);
-    if (!L.ready) return;
-    traced = Float32Array.from({ length: T }, (_, i) => (i === 0 ? L.cls : L.patches[i - 1]));
-  }
-  const R = traced || S.result.rollout.subarray(S.query * T, S.query * T + T);
-  let max = 1e-6;
-  for (let p = 1; p < T; p++) max = Math.max(max, R[p]);
-  const t = W / grid;
+  const E = evidence(S);
+  if (!S.showOverlay || !E.ready) return;
+  const { grid } = S.cfg, t = W / grid, max = Math.max(1e-6, ...E.scores), col = CLASS_COLORS[E.c];
   ctx.fillStyle = "rgba(10,10,15,0.35)";
   ctx.fillRect(0, 0, W, H);
-  ctx.globalCompositeOperation = "lighter";
   for (let p = 0; p < grid * grid; p++) {
-    const v = R[p + 1] / max;
-    ctx.fillStyle = rgba(GOLD, 0.55 * v ** 1.5);
+    const v = Math.max(0, E.scores[p]) / max;
+    ctx.fillStyle = rgba(col, 0.6 * v ** 1.3);
     ctx.fillRect((p % grid) * t, Math.floor(p / grid) * t, t, t);
-  }
-  ctx.globalCompositeOperation = "source-over";
-  if (S.query > 0) {
-    const q = S.query - 1;
-    ctx.strokeStyle = rgba(PAPER, 0.9);
-    ctx.lineWidth = 1.5;
-    ctx.strokeRect((q % grid) * t + 1, Math.floor(q / grid) * t + 1, t - 2, t - 2);
   }
 }
 
 // ---------- loop ----------
-const ro = new ResizeObserver(() => invalidate(true));
-[stage, $("bloom"), $("lens"), $("frame")].forEach((el) => ro.observe(el));
-
-let last = performance.now(), lastHover = "";
-function frameLoop(now) {
-  // Schedule first so one bad frame can't stop the loop for good.
+new ResizeObserver(invalidate).observe(document.body);
+let lastAnswer = "", lastHover = "";
+function frameLoop() {
   requestAnimationFrame(frameLoop);
-  const elapsed = (now - last) / 1000;
-  const dt = Math.min(0.05, elapsed); // capped for animation, so a stalled tab doesn't jump
-  last = now;
-  S.t += dt;
-  if (S.playing && S.mode === "tower") {
-    S.playT += elapsed; // wall-clock, so playback pace doesn't depend on frame rate
-    if (S.playT > 1.8) {
-      S.playT = 0;
-      if (S.block < S.cfg.layers - 1) setBlock(S.block + 1);
-      else { S.playing = false; buildLegend(); }
-    }
-  }
-  if (!S.result || !S.colors) return;
+  if (!dirty || !S.result) return;
+  dirty = false;
+  ensureCurves();
 
-  // Ease the scrub accordion toward the active block.
-  if (Math.abs(S.blockF - S.block) > 0.002) { S.blockF += (S.block - S.blockF) * Math.min(1, dt * 9); dirty = true; }
-  else S.blockF = S.block;
-  const traceTo = S.trace ? 1 : 0;
-  if (Math.abs(S.traceF - traceTo) > 0.002) { S.traceF += (traceTo - S.traceF) * Math.min(1, dt * 7); dirty = true; }
-  else S.traceF = traceTo;
-  if (S.mode === "drift" && S.driftPin < 0) dirty = true;
+  const [ctx, W, H] = fit(figure);
+  ctx.clearRect(0, 0, W, H);
+  S.hover = drawFigure(ctx, W, H, S);
+  placeTooltip(S.hover && tooltipHtml(S, S.hover));
+  const hk = JSON.stringify(S.hover);
+  if (hk !== lastHover) { lastHover = hk; dirty = true; } // repaint once to outline the new hover
 
-  if (dirty) {
-    dirty = false;
-    const [ctx, W, H] = fit(stage);
-    ctx.clearRect(0, 0, W, H);
-    const wide = W >= 760;
-    if (S.mode === "tower") {
-      // On wide screens the reading card takes a column on the right.
-      S.hover = drawTower(ctx, wide ? W - 250 : W, H, S);
-      if (S.hover) showTooltip(towerTooltip(S, S.hover));
-      else hideTooltip();
-    } else if (S.mode === "lineage") {
-      S.hover = drawLineage(ctx, wide ? W - 250 : W, H, S);
-      if (S.hover) showTooltip(lineageTooltip(S, S.hover));
-      else hideTooltip();
-    } else if (S.mode === "atlas") drawAtlas(ctx, W, H);
-    else drawDrift(ctx, W, H);
-    // A new hover target needs one more pass to paint its highlight.
-    const key = JSON.stringify(S.hover);
-    if (key !== lastHover) { lastHover = key; dirty = true; }
-    if (S.click) handleClick();
-    updateReading(wide);
-  }
-  if (panelsDirty) {
-    panelsDirty = false;
-    const [bctx, bW, bH] = fit($("bloom"));
-    bctx.clearRect(0, 0, bW, bH);
-    drawBloom(bctx, bW, bH);
-    const [lctx, lW, lH] = fit($("lens"));
-    lctx.clearRect(0, 0, lW, lH);
-    drawLens(lctx, lW, lH);
-    const [octx, oW, oH] = fit($("inputOverlay"));
-    octx.clearRect(0, 0, oW, oH);
-    drawOverlay(octx, oW, oH);
-  }
+  const answer = answerHtml(S);
+  if (answer !== lastAnswer) { $("answer").innerHTML = answer; lastAnswer = answer; }
+  const chart = $("chart");
+  chart.parentElement.style.visibility = curvePoints(S) ? "visible" : "hidden";
+  const [cctx, cW, cH] = fit(chart);
+  cctx.clearRect(0, 0, cW, cH);
+  drawChart(cctx, cW, cH, S);
+
+  const [octx, oW, oH] = fit($("inputOverlay"));
+  octx.clearRect(0, 0, oW, oH);
+  drawOverlay(octx, oW, oH);
 }
 
 buildSwatches();

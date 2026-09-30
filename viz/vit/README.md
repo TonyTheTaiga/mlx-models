@@ -1,32 +1,25 @@
-# Lumen — ViT visualizer
+# Lumen — which patches did the model lean on?
 
-An in-browser, artistic view of the CIFAR-10 ViT in `networks/transformers/vit/`. The model runs
-entirely in JavaScript (a Web Worker port of the MLX forward pass), so you can paint on an image
-and watch attention and the residual stream change live.
+An in-browser, image-first answer to one question about the CIFAR-10 ViT in
+`networks/transformers/vit/`: **which patches did the model lean on for its final prediction?**
+The model runs entirely in JavaScript (a Web Worker port of the MLX forward pass, checked against
+MLX on load), so you can paint on an image, drop in your own, and watch the answer change.
 
-- **Tower** — one plate per depth (pixels → embedding → block 1…6), folded like an accordion so
-  only the active block's input and output plates are open. Tiles are colored by a fixed per-depth
-  PCA of the residual stream; threads are the block's strongest attention into the query token
-  (CLS by default), and a dotted line is its residual path. Clicking a tile on a block's output
-  **traces** it: the accordion unfolds down to the pixels and a tree of attention rollout (heads
-  averaged, residual counted, MLPs ignored) shows which image patches shaped that token.
-  Scroll or ↑/↓ to move through depth; a card lists the top sources in words. Optional controls:
-  **play** (space) walks the query up through every block; **attention → MLP** opens each block
-  into its state between the two, with one stroke per token for how far the MLP moves it; and
-  **split heads** shows a compact scrub per head, side by side. (`tower.js` also
-  keeps three unused alternates — loom, orbit, stack — selectable via `S.variant`.)
-- **Lineage** — *which image patches shaped this token?* Pick a target (any patch or CLS, at any
-  block) and the image is redrawn as a mosaic sized and lit by each patch's share, with threads
-  from the top five sources. Two methods: **occlusion** (blank each patch to the image's mean
-  color and measure how far the target moves — causal, includes the MLPs; a 64-pass sweep split
-  across a small worker pool) and **rollout** (attention paths). A strip below repeats the
-  question after every block, so you can watch the receptive field grow; the card cross-checks
-  the two methods. From a Tower trace, "open in Lineage" jumps here with the same target.
-- **Atlas** — every head's attention map from the query, block by block, next to the residual stream.
-- **Drift** — Rope2D's `freq`/`pos_idx` were trainable, so each block learned its own patch
-  coordinates; the image is re-assembled at those learned positions.
-- **Verdict / Depth lens** — class probabilities, and the classifier head read out from CLS after
-  every block.
+**How it answers.** Each of the 64 patches is hidden in turn — flattened to the image's average
+color — and scored by how much the log-probability of the predicted class drops (negative scores
+mean the patch argued *against* it). The ranking is then put to the test:
+
+- **keep only the top k** patches (the rest flattened): does the prediction survive?
+- **remove the top k**: does it collapse?
+
+The headline is the smallest k that keeps the answer at ≥80% of its confidence — "6 of 64 patches
+were enough". The large image shows exactly those patches, with the rest flattened; drag k to see
+more or fewer, click a patch to keep everything down to its rank, and toggle **signed map** to color
+every patch for and against. Pick a runner-up class to ask "why not a cat?": the page then shows
+the strongest case its best patches can make.
+
+The sweeps (64 + 130 forward passes per image) run on a small worker pool, so they take a second
+or two and never block painting.
 
 ## Run
 
@@ -35,8 +28,4 @@ uv run python viz/vit/export.py            # writes viz/vit/web/assets/ from the
 python3 viz/vit/serve.py
 ```
 
-Then open http://localhost:8765. The footer reports the max logit difference between the browser
-forward pass and MLX on a few reference images (≈2e-5).
-
-Keys: `t`/`a`/`d` switch views, `1`–`4` solo a head, `0` all heads, `Esc` resets the query to CLS,
-`←`/`→` step through the gallery.
+Then open http://localhost:8765. Keys: `←`/`→` step through the gallery.

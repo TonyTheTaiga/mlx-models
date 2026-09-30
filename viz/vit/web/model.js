@@ -1,5 +1,4 @@
-// A plain-JS port of networks/transformers/vit/model.py + the CIFAR Classifier head,
-// instrumented to keep every residual state and attention map.
+// A plain-JS port of networks/transformers/vit/model.py + the CIFAR Classifier head.
 
 export async function loadModel(base = "assets") {
   const [manifest, buf] = await Promise.all([
@@ -153,26 +152,23 @@ class Vit {
     return out;
   }
 
+  // Returns the classifier's logits and probabilities for one image.
   forward(pixels) {
     const { nTokens: T, dModel: D, heads, headDim, win, channels, nPatches } = this.cfg;
     const w = this.w;
     const patchEmb = linear(this.patchify(pixels), nPatches, win * win * channels, w.embed, D);
-    let x = new Float32Array(T * D);
+    const x = new Float32Array(T * D);
     x.set(w.cls, 0);
     x.set(patchEmb, D);
 
-    const states = [x.slice()];
-    const mids = []; // each block's state after attention, before the MLP
-    const attn = [];
     const scale = 1 / Math.sqrt(headDim);
+    const row = new Float32Array(T); // one query's attention weights
     for (const L of w.layers) {
       const qkv = linear(layerNorm(x, T, D, L.ln1w, L.ln1b), T, D, L.qkv, 3 * D);
       this.rope(qkv, 0, L);
       this.rope(qkv, D, L);
       const mixed = new Float32Array(T * D);
-      const layerAttn = [];
       for (let h = 0; h < heads; h++) {
-        const A = new Float32Array(T * T);
         const ho = h * headDim;
         for (let i = 0; i < T; i++) {
           const qo = i * 3 * D + ho;
@@ -181,25 +177,20 @@ class Vit {
             const ko = j * 3 * D + D + ho;
             let s = 0;
             for (let k = 0; k < headDim; k++) s += qkv[qo + k] * qkv[ko + k];
-            s *= scale;
-            A[i * T + j] = s;
-            if (s > m) m = s;
+            row[j] = s * scale;
+            if (row[j] > m) m = row[j];
           }
           let z = 0;
-          for (let j = 0; j < T; j++) z += A[i * T + j] = Math.exp(A[i * T + j] - m);
+          for (let j = 0; j < T; j++) z += row[j] = Math.exp(row[j] - m);
+          const oo = i * D + ho;
           for (let j = 0; j < T; j++) {
-            const a = (A[i * T + j] /= z);
-            const vo = j * 3 * D + 2 * D + ho;
-            const oo = i * D + ho;
+            const a = row[j] / z, vo = j * 3 * D + 2 * D + ho;
             for (let k = 0; k < headDim; k++) mixed[oo + k] += a * qkv[vo + k];
           }
         }
-        layerAttn.push(A);
       }
-      attn.push(layerAttn);
       const proj = linear(mixed, T, D, L.out, D);
       for (let i = 0; i < x.length; i++) x[i] += proj[i];
-      mids.push(x.slice());
 
       const hidden = linear(layerNorm(x, T, D, L.ln2w, L.ln2b), T, D, L.ff1, 4 * D);
       for (let i = 0; i < hidden.length; i++) {
@@ -208,35 +199,9 @@ class Vit {
       }
       const ff = linear(hidden, T, 4 * D, L.ff2, D);
       for (let i = 0; i < x.length; i++) x[i] += ff[i];
-      states.push(x.slice());
     }
 
-    // "Depth lens": the classifier head read out from the CLS token at every depth.
-    const lens = states.map((s) => softmax(linear(s.subarray(0, D), 1, D, w.headW, 10, w.headB)));
-    const logits = Array.from(linear(x.subarray(0, D), 1, D, w.headW, 10, w.headB));
-    return { states, mids, attn, logits, probs: softmax(logits), lens };
+    const logits = Array.from(linear(x.subarray(0, D), 1, D, w.headW, w.headB.length, w.headB));
+    return { logits, probs: softmax(logits) };
   }
-}
-
-// Attention rollout (Abnar & Zuidema): mean over heads, add identity for the residual, chain.
-export function rollout(attn, T) {
-  let R = null;
-  for (const layer of attn) {
-    const A = new Float32Array(T * T);
-    for (const H of layer) for (let i = 0; i < T * T; i++) A[i] += H[i] / layer.length;
-    for (let i = 0; i < T; i++) {
-      for (let j = 0; j < T; j++) A[i * T + j] *= 0.5;
-      A[i * T + i] += 0.5;
-    }
-    if (!R) { R = A; continue; }
-    const N = new Float32Array(T * T);
-    for (let i = 0; i < T; i++)
-      for (let k = 0; k < T; k++) {
-        const a = A[i * T + k];
-        if (a === 0) continue;
-        for (let j = 0; j < T; j++) N[i * T + j] += a * R[k * T + j];
-      }
-    R = N;
-  }
-  return R;
 }
