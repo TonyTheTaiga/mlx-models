@@ -1,4 +1,5 @@
-// The Tower view, in four variants. All of them share one idea: depth k is a layer of tokens
+// The Tower view. The page uses scrub; loom, orbit and stack are kept as alternates (set
+// S.variant to try one). All of them share one idea: depth k is a layer of tokens
 // (0 = pixels, 1 = patch embedding, 2.. = output of block k-1), and one *active block* b moves
 // tokens from depth b+1 to depth b+2. Only that block's strongest attention sources are drawn
 // in full; the other blocks leave a faint trace.

@@ -146,17 +146,6 @@ kbd { font: inherit; border: 1px solid var(--line); border-radius: 3px; padding:
 .legend button.on { background: rgba(235, 230, 218, 0.12); color: var(--paper); border-color: rgba(235, 230, 218, 0.5); }
 .legend .query { color: var(--muted); font-size: 11px; margin-left: 8px; }
 .legend .query b { color: var(--gold); font-weight: 500; }
-.variants {
-  position: absolute; top: 60px; left: 50%; transform: translateX(-50%);
-  display: flex; gap: 2px;
-}
-.variants button {
-  border: none; border-radius: 0; padding: 2px 8px; font-size: 10.5px;
-  color: var(--muted); letter-spacing: 0.08em;
-  border-bottom: 1px solid transparent;
-}
-.variants button:hover { color: var(--paper); }
-.variants button.on { background: none; color: var(--gold); border-bottom-color: var(--gold); }
 .side {
   position: absolute; right: 18px; top: 18px; width: 226px;
   display: flex; flex-direction: column; gap: 16px; align-items: flex-end;

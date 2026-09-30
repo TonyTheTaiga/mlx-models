@@ -1,6 +1,6 @@
 // Lumen — renders the ViT's residual stream and attention as light.
 //
-// Tower: four variants of the same stack of depths — see tower.js.
+// Tower: the scrub accordion, one block open at a time — see tower.js.
 // Atlas: every head's attention map from the query, plus the residual stream mosaic.
 // Drift: the rotary positions each layer learned (they were left trainable).
 
@@ -14,6 +14,7 @@ const S = {
   pixels: new Uint8ClampedArray(32 * 32 * 3),
   result: null, colors: null,
   query: 0, head: -1, mode: "tower",
+  // Tower renders scrub; tower.js also keeps the loom/orbit/stack variants, unused in the UI.
   variant: "scrub", block: 0, blockF: 0, resultId: 0,
   yaw: -0.55, pitch: 0.42, dragging: false,
   hover: null, pointer: null, driftPin: -1,
@@ -276,8 +277,6 @@ const tokenName = (t) => nameOf(S.cfg, t);
 
 function buildLegend() {
   if (!S.cfg) return;
-  $("variants").hidden = S.mode !== "tower";
-  $("variants").querySelectorAll("button").forEach((b) => b.classList.toggle("on", b.dataset.variant === S.variant));
   const L = $("legend");
   L.innerHTML = "";
   const add = (html, on, onclick) => {
@@ -322,9 +321,7 @@ function setMode(m) {
   document.querySelectorAll("#modes button").forEach((b) => b.classList.toggle("on", b.dataset.mode === m));
   buildLegend();
 }
-function setVariant(v) { S.variant = v; S.hover = null; buildLegend(); }
 $("modes").onclick = (e) => { const b = e.target.closest("button"); if (b) setMode(b.dataset.mode); };
-$("variants").onclick = (e) => { const b = e.target.closest("button"); if (b) setVariant(b.dataset.variant); };
 
 addEventListener("keydown", (e) => {
   if (e.target.tagName === "INPUT" || !S.cfg) return;
