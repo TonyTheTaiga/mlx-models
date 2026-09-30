@@ -162,6 +162,7 @@ class Vit {
     x.set(patchEmb, D);
 
     const states = [x.slice()];
+    const mids = []; // each block's state after attention, before the MLP
     const attn = [];
     const scale = 1 / Math.sqrt(headDim);
     for (const L of w.layers) {
@@ -198,6 +199,7 @@ class Vit {
       attn.push(layerAttn);
       const proj = linear(mixed, T, D, L.out, D);
       for (let i = 0; i < x.length; i++) x[i] += proj[i];
+      mids.push(x.slice());
 
       const hidden = linear(layerNorm(x, T, D, L.ln2w, L.ln2b), T, D, L.ff1, 4 * D);
       for (let i = 0; i < hidden.length; i++) {
@@ -212,7 +214,7 @@ class Vit {
     // "Depth lens": the classifier head read out from the CLS token at every depth.
     const lens = states.map((s) => softmax(linear(s.subarray(0, D), 1, D, w.headW, 10, w.headB)));
     const logits = Array.from(linear(x.subarray(0, D), 1, D, w.headW, 10, w.headB));
-    return { states, attn, logits, probs: softmax(logits), lens };
+    return { states, mids, attn, logits, probs: softmax(logits), lens };
   }
 }
 

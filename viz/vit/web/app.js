@@ -15,7 +15,8 @@ const S = {
   result: null, colors: null,
   query: 0, head: -1, mode: "tower",
   // Tower renders scrub; tower.js also keeps the loom/orbit/stack variants, unused in the UI.
-  variant: "scrub", block: 0, blockF: 0, resultId: 0,
+  variant: "scrub", block: 0,
+  subSteps: false, splitHeads: false, playing: false, playT: 0, midColors: null, blockF: 0, resultId: 0,
   yaw: -0.55, pitch: 0.42, dragging: false,
   hover: null, pointer: null, driftPin: -1,
   brush: 0, paint: [235, 230, 218], showRollout: true,
@@ -51,6 +52,7 @@ worker.onmessage = ({ data }) => {
     inflight = false;
     S.result = data.out;
     S.colors = tokenColors(data.out.states);
+    S.midColors = tokenColors(data.out.mids, S.pcaMid);
     S.resultId++;
     renderVerdict();
     invalidate(true);
@@ -62,13 +64,15 @@ worker.onmessage = ({ data }) => {
 };
 
 async function boot() {
-  const [pca, meta, buf, ref] = await Promise.all([
+  const [pca, pcaMid, meta, buf, ref] = await Promise.all([
     fetch("assets/pca.json").then((r) => r.json()),
+    fetch("assets/pca_mid.json").then((r) => r.json()),
     fetch("assets/samples.json").then((r) => r.json()),
     fetch("assets/samples.bin").then((r) => r.arrayBuffer()),
     fetch("assets/reference.json").then((r) => r.json()),
   ]);
   S.pca = pca;
+  S.pcaMid = pcaMid;
   S.samples = new Uint8Array(buf);
   S.labels = meta.labels;
   buildGallery();
@@ -83,10 +87,10 @@ async function boot() {
 }
 
 // PCA false color per token per depth: component 1 → lightness, 2/3 → OKLab a/b.
-function tokenColors(states) {
+function tokenColors(states, bases = S.pca) {
   const { nTokens: T, dModel: D } = S.cfg;
   return states.map((x, d) => {
-    const { mean, components, lo, hi } = S.pca[d];
+    const { mean, components, lo, hi } = bases[d];
     const out = [];
     for (let t = 0; t < T; t++) {
       const u = components.map((comp, k) => {
@@ -265,7 +269,7 @@ addEventListener("drop", (e) => {
 
 // ---------- legend & modes ----------
 const HINTS = {
-  scrub: "Scroll or ↑↓ to move through depth. Only the active block opens: curves are attention into the query, the dotted line is its residual path. Click a tile to follow it, or a closed plate to open it.",
+  scrub: "Scroll or ↑↓ to move through depth. Only the active block opens: curves are attention into the query, the dotted line is its residual path. Click a tile to follow it, or a closed plate to open it. Space plays the query up through every block.",
   loom: "Every token is a vertical thread, recolored at each depth. Attention is woven between rows — bright for the active block, a faint trace for the rest. Scroll or ↑↓ to change block.",
   orbit: "Each ring is one depth, the image unwrapped around its center, with CLS at the heart. Threads spiral from one ring into the next. Scroll or ↑↓ to change block.",
   stack: "The whole stack in 3D. Drag to orbit, scroll or ↑↓ to change the active block, click a tile to follow it.",
@@ -279,9 +283,10 @@ function buildLegend() {
   if (!S.cfg) return;
   const L = $("legend");
   L.innerHTML = "";
-  const add = (html, on, onclick) => {
+  const add = (html, on, onclick, label) => {
     const b = document.createElement("button");
     b.innerHTML = html;
+    if (label) b.setAttribute("aria-label", label), (b.title = label);
     b.classList.toggle("on", on);
     b.onclick = onclick;
     L.appendChild(b);
@@ -295,12 +300,20 @@ function buildLegend() {
       const step = document.createElement("span");
       step.className = "stepper";
       step.innerHTML = `<button data-d="-1" aria-label="Previous block">‹</button><span>block <b>${S.block + 1}</b> / ${S.cfg.layers}</span><button data-d="1" aria-label="Next block">›</button>`;
-      step.onclick = (e) => { const b = e.target.closest("button"); if (b) setBlock(S.block + +b.dataset.d); };
+      step.onclick = (e) => { const b = e.target.closest("button"); if (b) userBlock(S.block + +b.dataset.d); };
       L.appendChild(step);
+      add(S.playing ? "❚❚ pause" : "▶ play", S.playing, togglePlay);
+      add("attention → MLP", S.subSteps, () => { S.subSteps = !S.subSteps; buildLegend(); });
+      add("split heads", S.splitHeads, () => { S.splitHeads = !S.splitHeads; S.hover = null; buildLegend(); });
     }
-    add("all heads", S.head < 0, () => setHead(-1));
-    for (let h = 0; h < S.cfg.heads; h++)
-      add(`<span class="dot" style="background:${rgba(HEAD_COLORS[h])}"></span>head ${h + 1}`, S.head === h, () => setHead(S.head === h ? -1 : h));
+    // In the head grid every panel is one head, so soloing doesn't apply.
+    if (!(S.mode === "tower" && S.splitHeads)) {
+      // Compact in the Tower, where the legend also holds the block controls.
+      const short = S.mode === "tower";
+      add(short ? "all" : "all heads", S.head < 0, () => setHead(-1), "all heads");
+      for (let h = 0; h < S.cfg.heads; h++)
+        add(`<span class="dot" style="background:${rgba(HEAD_COLORS[h])}"></span>${short ? "" : "head "}${h + 1}`, S.head === h, () => setHead(S.head === h ? -1 : h), `head ${h + 1}`);
+    }
     const q = document.createElement("span");
     q.className = "query";
     q.innerHTML = `query <b>${tokenName(S.query)}</b>`;
@@ -311,6 +324,18 @@ function buildLegend() {
 }
 function setHead(h) { S.head = h; buildLegend(); }
 function setQuery(q) { S.query = q; buildLegend(); }
+// Play walks the query up through every block; any manual navigation stops it.
+function togglePlay() {
+  if (S.playing) { S.playing = false; buildLegend(); return; }
+  S.playing = true;
+  S.playT = 0;
+  if (S.block === S.cfg.layers - 1) setBlock(0);
+  buildLegend();
+}
+function userBlock(b) {
+  if (S.playing) { S.playing = false; buildLegend(); }
+  setBlock(b);
+}
 function setBlock(b) {
   b = clamp(b, 0, S.cfg.layers - 1);
   if (b !== S.block) { S.block = b; buildLegend(); }
@@ -333,7 +358,10 @@ addEventListener("keydown", (e) => {
   else if (e.key === "d") setMode("drift");
   else if ((e.key === "ArrowUp" || e.key === "ArrowDown") && S.mode === "tower") {
     e.preventDefault();
-    setBlock(S.block + (e.key === "ArrowUp" ? 1 : -1));
+    userBlock(S.block + (e.key === "ArrowUp" ? 1 : -1));
+  } else if (e.key === " " && S.mode === "tower") {
+    e.preventDefault();
+    togglePlay();
   } else if (e.key === "ArrowRight" || e.key === "ArrowLeft") {
     const n = S.labels.length;
     selectSample((S.sampleIndex + (e.key === "ArrowRight" ? 1 : n - 1)) % n);
@@ -346,7 +374,7 @@ function updateReading(wide) {
   const el = $("reading");
   el.hidden = S.mode !== "tower" || !wide;
   if (el.hidden) return;
-  const key = [S.resultId, S.query, S.head, S.block].join();
+  const key = [S.resultId, S.query, S.head, S.block, S.subSteps].join();
   if (key === readingKey) return;
   readingKey = key;
   el.innerHTML = readingHtml(S);
@@ -709,7 +737,7 @@ stage.addEventListener("wheel", (e) => {
   e.preventDefault();
   wheelAcc += e.deltaY;
   // Scrolling up climbs the tower toward deeper blocks.
-  if (Math.abs(wheelAcc) > 60) { setBlock(S.block - Math.sign(wheelAcc)); wheelAcc = 0; }
+  if (Math.abs(wheelAcc) > 60) { userBlock(S.block - Math.sign(wheelAcc)); wheelAcc = 0; }
 }, { passive: false });
 stage.addEventListener("pointerdown", (e) => {
   stage.setPointerCapture(e.pointerId);
@@ -731,8 +759,8 @@ function handleClick() {
   if (S.mode === "tower") {
     // A token becomes the query, and the block that produced its depth becomes active.
     if (!h) return;
-    if (h.kind === "ghost") return setBlock(Math.max(0, h.k - 2));
-    if (h.k >= 1) setBlock(Math.max(0, h.k - 2));
+    if (h.kind === "ghost") return userBlock(Math.max(0, h.k - 2));
+    if (h.k >= 1) userBlock(Math.max(0, h.k - 2));
     setQuery(h.t);
   } else if (S.mode === "atlas") {
     if (h) setQuery(h.token === S.query ? 0 : h.token);
@@ -773,9 +801,18 @@ let last = performance.now(), lastHover = "";
 function frameLoop(now) {
   // Schedule first so one bad frame can't stop the loop for good.
   requestAnimationFrame(frameLoop);
-  const dt = Math.min(0.05, (now - last) / 1000);
+  const elapsed = (now - last) / 1000;
+  const dt = Math.min(0.05, elapsed); // capped for animation, so a stalled tab doesn't jump
   last = now;
   S.t += dt;
+  if (S.playing && S.mode === "tower") {
+    S.playT += elapsed; // wall-clock, so playback pace doesn't depend on frame rate
+    if (S.playT > 1.8) {
+      S.playT = 0;
+      if (S.block < S.cfg.layers - 1) setBlock(S.block + 1);
+      else { S.playing = false; buildLegend(); }
+    }
+  }
   if (!S.result || !S.colors) return;
 
   // Ease the scrub accordion toward the active block.

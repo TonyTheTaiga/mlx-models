@@ -100,15 +100,19 @@ function orb(ctx, x, y, r, color, { halo = false, ring = null } = {}) {
 }
 
 export function drawTower(ctx, W, H, S) {
+  if (S.variant === "scrub" && S.splitHeads) return drawHeadGrid(ctx, W, H, S);
   const fn = { scrub: drawScrub, loom: drawLoom, orbit: drawOrbit, stack: drawStack }[S.variant];
   return fn(ctx, W, H, S);
 }
 
 export function towerTooltip(S, h) {
   if (h.kind === "ghost") return `<b>${depthName(h.k)}</b> · click to open`;
-  let s = `<b>${depthName(h.k)}</b> · ${tokenName(S.cfg, h.t)}`;
+  if (h.head !== undefined) S = { ...S, head: h.head };
+  const where = h.mid ? `block ${h.k - 1} · after attention` : depthName(h.k);
+  let s = `<b>${where}</b> · ${tokenName(S.cfg, h.t)}`;
+  if (h.head !== undefined) s += ` · head ${h.head + 1}`;
   if (h.k >= 1) {
-    const D = S.cfg.dModel, x = S.result.states[h.k - 1];
+    const D = S.cfg.dModel, x = h.mid ? S.result.mids[h.k - 2] : S.result.states[h.k - 1];
     let n = 0;
     for (let i = 0; i < D; i++) n += x[h.t * D + i] ** 2;
     s += ` · ‖x‖ ${Math.sqrt(n).toFixed(1)}`;
@@ -118,37 +122,80 @@ export function towerTooltip(S, h) {
 }
 
 // ---------- scrub: the orthographic accordion ----------
-function drawScrub(ctx, W, H, S) {
+function drawScrub(ctx, W, H, S, { compact = false } = {}) {
   const { grid, layers } = S.cfg;
   const K = layers + 2;
   const src = S.blockF + 1; // fractional while animating
+  const b = S.block, fade = clamp(1 - Math.abs(S.blockF - b) * 2.5, 0, 1);
+  // With sub-steps on, the open gap also holds the block's state between attention and MLP.
+  const steps = !!S.subSteps && !!S.result.mids;
   const yaw = -0.62, pitch = 0.55;
   const cyw = Math.cos(yaw), syw = Math.sin(yaw), cp = Math.cos(pitch), sp = Math.sin(pitch);
   const raw = (x, y, z) => {
     const X = x * cyw - z * syw, Z = x * syw + z * cyw;
     return [X, -(y * cp + Z * sp)];
   };
+  const G = steps ? 1.6 : 1.05;
   const ys = [0];
-  for (let i = 0; i < K - 1; i++) ys.push(ys[i] + lerp(0.085, 1.05, clamp(1 - Math.abs(i - src), 0, 1)));
+  for (let i = 0; i < K - 1; i++) ys.push(ys[i] + lerp(0.085, G, clamp(1 - Math.abs(i - src), 0, 1)));
   const open = (k) => clamp(1 - Math.min(Math.abs(k - src), Math.abs(k - src - 1)), 0, 1);
+  const yMid = ys[b + 1] + (ys[b + 2] - ys[b + 1]) * 0.56;
+  const showMid = steps && fade > 0;
 
-  // Fit the whole accordion to the stage.
+  // Fit the accordion to the stage (just the open pair when compact).
   let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
-  for (const y of [ys[0], ys[K - 1]])
+  const extent = compact ? [ys[Math.floor(src)], ys[Math.min(K - 1, Math.ceil(src) + 1)]] : [ys[0], ys[K - 1]];
+  for (const y of extent)
     for (const [x, z] of [[-0.85, 0], [0.5, 0.5], [0.5, -0.5], [-0.5, 0.5], [-0.5, -0.5]]) {
-      const [a, b] = raw(x, y, z);
-      x0 = Math.min(x0, a); x1 = Math.max(x1, a); y0 = Math.min(y0, b); y1 = Math.max(y1, b);
+      const [a, bb] = raw(x, y, z);
+      x0 = Math.min(x0, a); x1 = Math.max(x1, a); y0 = Math.min(y0, bb); y1 = Math.max(y1, bb);
     }
-  const scale = Math.min((W - Math.min(260, W * 0.38)) / (x1 - x0), (H - 150) / (y1 - y0));
-  const ox = W / 2 - Math.min(40, W * 0.08) - (scale * (x0 + x1)) / 2, oy = H / 2 + 22 - (scale * (y0 + y1)) / 2;
-  const P = (x, y, z) => { const [a, b] = raw(x, y, z); return [ox + a * scale, oy + b * scale]; };
+  const scale = compact
+    ? Math.min((W - 24) / (x1 - x0), (H - 24) / (y1 - y0))
+    : Math.min((W - Math.min(260, W * 0.38)) / (x1 - x0), (H - 150) / (y1 - y0));
+  const ox = W / 2 - (compact ? 0 : Math.min(40, W * 0.08)) - (scale * (x0 + x1)) / 2;
+  const oy = H / 2 + (compact ? 0 : 22) - (scale * (y0 + y1)) / 2;
+  const P = (x, y, z) => { const [a, bb] = raw(x, y, z); return [ox + a * scale, oy + bb * scale]; };
   const tileXZ = (p) => [((p % grid) + 0.5) / grid - 0.5, 0.5 - (Math.floor(p / grid) + 0.5) / grid];
-  const pos = (k, t) => (t === 0 ? P(-0.8, ys[k], 0) : P(tileXZ(t - 1)[0], ys[k], tileXZ(t - 1)[1]));
+  const posAt = (y, t) => (t === 0 ? P(-0.8, y, 0) : P(tileXZ(t - 1)[0], y, tileXZ(t - 1)[1]));
+  const pos = (k, t) => posAt(ys[k], t);
 
-  const picks = [], ghosts = [], orbs = [];
+  // Hit targets in draw order: { k, quads, orb: [x, y, r], mid }.
+  const drawn = [], ghosts = [];
   const hovered = S.hover;
+  const h = 0.5 / grid - 0.06 / grid;
+  const tileQuads = (y) => Array.from({ length: grid * grid }, (_, p) => {
+    const [x, z] = tileXZ(p);
+    return [[x - h, z + h], [x + h, z + h], [x + h, z - h], [x - h, z - h]].map(([a, bb]) => P(a, y, bb));
+  });
+  const ring = (q, color, w) => { quadPath(ctx, q); ctx.strokeStyle = color; ctx.lineWidth = w; ctx.stroke(); };
+
+  // The block's in-between state: a plate slid into the open gap.
+  const drawMid = () => {
+    ctx.globalAlpha = fade;
+    const corners = [[-0.5, -0.5], [0.5, -0.5], [0.5, 0.5], [-0.5, 0.5]].map(([x, z]) => P(x * 1.05, yMid, z * 1.05));
+    quadPath(ctx, corners);
+    ctx.fillStyle = "rgba(13,13,20,0.9)"; ctx.fill();
+    ctx.setLineDash([2, 3]);
+    ctx.strokeStyle = rgba(PAPER, 0.25); ctx.lineWidth = 1; ctx.stroke();
+    ctx.setLineDash([]);
+    const quads = tileQuads(yMid);
+    quads.forEach((q, p) => { quadPath(ctx, q); ctx.fillStyle = rgba(S.midColors[b][p + 1], 0.9); ctx.fill(); });
+    if (S.query > 0) ring(quads[S.query - 1], rgba(GOLD, 0.95), 1.6);
+    if (hovered?.kind === "token" && hovered.mid && hovered.t > 0) ring(quads[hovered.t - 1], rgba(PAPER, 0.9), 1.2);
+    const [x, y] = posAt(yMid, 0);
+    orb(ctx, x, y, 6, S.midColors[b][0], { halo: true, ring: S.query === 0 ? rgba(GOLD, 0.9) : null });
+    if (!compact) {
+      const lx = P(0.5, yMid, 0.5);
+      label(ctx, "after attention", lx[0] + 18, lx[1], { active: true });
+    }
+    ctx.globalAlpha = 1;
+    drawn.push({ k: b + 2, quads: fade > 0.5 ? quads : null, orb: [x, y, 12], mid: true });
+  };
+
   for (let k = 0; k < K; k++) {
     const o = open(k), y = ys[k];
+    if (compact && o <= 0.5) { ghosts.push(null); continue; }
     const corners = [[-0.5, -0.5], [0.5, -0.5], [0.5, 0.5], [-0.5, 0.5]].map(([x, z]) => P(x * 1.05, y, z * 1.05));
     // Closed plates above the open pair sit between it and the eye, so keep them sheer.
     const above = k > src + 1 + 0.5;
@@ -161,17 +208,13 @@ function drawScrub(ctx, W, H, S) {
     ctx.stroke();
     ghosts.push(corners);
 
-    const quads = [];
-    const h = 0.5 / grid - 0.06 / grid;
-    for (let p = 0; p < grid * grid; p++) {
-      const [x, z] = tileXZ(p);
-      const q = [[x - h, z + h], [x + h, z + h], [x + h, z - h], [x - h, z - h]].map(([a, b]) => P(a, y, b));
-      quads.push(q);
+    const quads = tileQuads(y);
+    quads.forEach((q, p) => {
       if (k === 0) {
         // Pixels: shear the patch into the plate with an affine transform.
-        const [a, b, , d] = q;
+        const [a, bq, , d] = q;
         ctx.save();
-        ctx.transform((b[0] - a[0]) / 4, (b[1] - a[1]) / 4, (d[0] - a[0]) / 4, (d[1] - a[1]) / 4, a[0], a[1]);
+        ctx.transform((bq[0] - a[0]) / 4, (bq[1] - a[1]) / 4, (d[0] - a[0]) / 4, (d[1] - a[1]) / 4, a[0], a[1]);
         patchPixels(ctx, S, p, 0, 0, 4, 0.15 + 0.85 * o);
         ctx.restore();
       } else {
@@ -179,61 +222,131 @@ function drawScrub(ctx, W, H, S) {
         ctx.fillStyle = rgba(S.colors[k - 1][p + 1], (above ? 0.03 : 0.07) + 0.88 * o);
         ctx.fill();
       }
-    }
-    picks.push(o > 0.5 ? quads : null);
-    if (o > 0.5 && S.query > 0) {
-      quadPath(ctx, quads[S.query - 1]);
-      ctx.strokeStyle = rgba(GOLD, 0.95); ctx.lineWidth = 1.6; ctx.stroke();
-    }
-    if (o > 0.5 && hovered?.kind === "token" && hovered.k === k && hovered.t > 0) {
-      quadPath(ctx, quads[hovered.t - 1]);
-      ctx.strokeStyle = rgba(PAPER, 0.9); ctx.lineWidth = 1.2; ctx.stroke();
-    }
+    });
+    if (o > 0.5 && S.query > 0) ring(quads[S.query - 1], rgba(GOLD, 0.95), 1.6);
+    if (o > 0.5 && hovered?.kind === "token" && !hovered.mid && hovered.k === k && hovered.t > 0) ring(quads[hovered.t - 1], rgba(PAPER, 0.9), 1.2);
+    let orbHit = null;
     if (k >= 1) {
       const [x, yy] = pos(k, 0);
       const r = 3 + 4 * o;
       orb(ctx, x, yy, r, S.colors[k - 1][0], { halo: o > 0.5, ring: o > 0.5 && S.query === 0 ? rgba(GOLD, 0.9) : null });
-      orbs.push([k, x, yy, r + 6, o]);
+      if (o > 0.5) orbHit = [x, yy, r + 6];
     }
-    const lx = P(0.5, y, 0.5);
-    label(ctx, depthName(k), lx[0] + 18, lx[1], { active: o > 0.5, big: W >= 500 && Math.round(src) + 1 === k });
+    if (!compact) {
+      const lx = P(0.5, y, 0.5);
+      label(ctx, depthName(k), lx[0] + 18, lx[1], { active: o > 0.5, big: W >= 500 && Math.round(src) + 1 === k });
+    }
+    drawn.push({ k, quads: o > 0.5 ? quads : null, orb: orbHit, mid: false });
+    if (showMid && k === b + 1) drawMid();
   }
 
-  // Attention and the residual path for the active block, fading in after a scrub.
-  const b = S.block, fade = clamp(1 - Math.abs(S.blockF - b) * 2.5, 0, 1);
+  // Attention, the MLP, and the residual path for the active block, fading in after a scrub.
   if (fade > 0) {
     ctx.globalAlpha = fade;
-    const Q = pos(b + 2, S.query), Qc = [Q[0], Q[1] + scale * 0.45];
-    const Kq = pos(b + 1, S.query);
+    const Qy = showMid ? yMid : ys[b + 2];
+    const reach = showMid ? (yMid - ys[b + 1]) * 0.43 : 0.45;
+    const Q = posAt(Qy, S.query), Qc = [Q[0], Q[1] + scale * reach];
+    const Kq = pos(b + 1, S.query), Qout = pos(b + 2, S.query);
     ctx.setLineDash([3, 4]);
     ctx.strokeStyle = rgba(GOLD, 0.55); ctx.lineWidth = 1.2;
-    ctx.beginPath(); ctx.moveTo(Kq[0], Kq[1]); ctx.lineTo(Q[0], Q[1]); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(Kq[0], Kq[1]); ctx.lineTo(Qout[0], Qout[1]); ctx.stroke();
     ctx.setLineDash([]);
     ctx.lineCap = "round";
-    for (const { j, a, h } of sources(S, b, ACTIVE_K).reverse()) {
-      const Kp = pos(b + 1, j), Kc = [Kp[0], Kp[1] - scale * 0.45];
-      thread(ctx, () => { ctx.moveTo(Kp[0], Kp[1]); ctx.bezierCurveTo(Kc[0], Kc[1], Qc[0], Qc[1], Q[0], Q[1]); }, a, HEAD_COLORS[h], true);
+
+    if (showMid) {
+      // The MLP works on each token alone: one vertical stroke per token, weighted by how far
+      // the MLP moves it.
+      const D = S.cfg.dModel, T = S.cfg.nTokens, before = S.result.mids[b], after = S.result.states[b + 1];
+      const moved = Array.from({ length: T }, (_, t) => {
+        let n = 0;
+        for (let i = 0; i < D; i++) n += (after[t * D + i] - before[t * D + i]) ** 2;
+        return Math.sqrt(n);
+      });
+      const most = Math.max(...moved);
+      for (let t = 0; t < T; t++) {
+        const r = moved[t] / most, a = posAt(yMid, t), c = pos(b + 2, t);
+        const isQ = t === S.query;
+        ctx.strokeStyle = isQ ? rgba(GOLD, 0.95) : rgba(PAPER, 0.06 + 0.5 * r * r);
+        ctx.lineWidth = isQ ? 1.8 : 0.5 + 2.5 * r;
+        ctx.beginPath(); ctx.moveTo(a[0], a[1]); ctx.lineTo(c[0], c[1]); ctx.stroke();
+      }
     }
-    const mid = P(0.5, (ys[b + 1] + ys[b + 2]) / 2, 0.5);
-    ctx.font = MONO; ctx.textAlign = "left"; ctx.fillStyle = rgba(GOLD, 0.8);
-    const narrow = W < 500;
-    ctx.fillText(narrow ? "↑ attention" : `↑ attention into ${tokenName(S.cfg, S.query)}`, mid[0] + 18, mid[1] - 7);
-    ctx.fillStyle = rgba(MUTED, 0.9);
-    ctx.fillText(narrow ? "┆ residual" : "┆ residual path", mid[0] + 18, mid[1] + 8);
+
+    for (const { j, a, h: head } of sources(S, b, ACTIVE_K).reverse()) {
+      const Kp = pos(b + 1, j), Kc = [Kp[0], Kp[1] - scale * reach];
+      thread(ctx, () => { ctx.moveTo(Kp[0], Kp[1]); ctx.bezierCurveTo(Kc[0], Kc[1], Qc[0], Qc[1], Q[0], Q[1]); }, a, HEAD_COLORS[head], true);
+    }
+
+    if (!compact) {
+      const narrow = W < 500;
+      const caption = (y, lines) => {
+        const m = P(0.5, y, 0.5);
+        ctx.font = MONO; ctx.textAlign = "left";
+        lines.forEach(([text, color], i) => { ctx.fillStyle = color; ctx.fillText(text, m[0] + 18, m[1] - 7 + i * 15); });
+      };
+      const attnCaption = [
+        [narrow ? "↑ attention" : `↑ attention into ${tokenName(S.cfg, S.query)}`, rgba(GOLD, 0.8)],
+        [narrow ? "┆ residual" : "┆ residual path", rgba(MUTED, 0.9)],
+      ];
+      if (showMid) {
+        caption((ys[b + 1] + yMid) / 2, attnCaption);
+        caption((yMid + ys[b + 2]) / 2 + 0.04, [[narrow ? "↑ MLP" : "↑ MLP, each token alone", rgba(PAPER, 0.75)]]);
+      } else caption((ys[b + 1] + ys[b + 2]) / 2, attnCaption);
+    }
     ctx.globalAlpha = 1;
   }
 
-  // Hit-testing: open tiles and orbs first, then any plate edge as a ghost.
+  // Hit-testing, nearest first: orbs, then open tiles, then any closed plate.
   if (!S.pointer) return null;
   const [mx, my] = S.pointer;
-  for (const [k, x, y, r, o] of orbs) if (o > 0.5 && Math.hypot(mx - x, my - y) < r) return { kind: "token", k, t: 0 };
-  for (let k = K - 1; k >= 0; k--) {
-    if (!picks[k]) continue;
-    const p = picks[k].findIndex((q) => inQuad(mx, my, q));
-    if (p >= 0) return { kind: "token", k, t: p + 1 };
+  for (let i = drawn.length - 1; i >= 0; i--) {
+    const d = drawn[i];
+    if (d.orb && Math.hypot(mx - d.orb[0], my - d.orb[1]) < d.orb[2]) return { kind: "token", k: d.k, t: 0, mid: d.mid };
   }
-  for (let k = K - 1; k >= 0; k--) if (open(k) <= 0.5 && inQuad(mx, my, ghosts[k])) return { kind: "ghost", k };
+  for (let i = drawn.length - 1; i >= 0; i--) {
+    const d = drawn[i];
+    if (!d.quads) continue;
+    const p = d.quads.findIndex((q) => inQuad(mx, my, q));
+    if (p >= 0) return { kind: "token", k: d.k, t: p + 1, mid: d.mid };
+  }
+  for (let k = K - 1; k >= 0; k--) if (ghosts[k] && open(k) <= 0.5 && inQuad(mx, my, ghosts[k])) return { kind: "ghost", k };
   return null;
+}
+
+// Every head at once: a compact scrub per head, all on the same block and query.
+function drawHeadGrid(ctx, W, H, S) {
+  const { heads } = S.cfg;
+  const cols = heads <= 2 ? heads : 2, rows = Math.ceil(heads / cols);
+  const top = 96, bottom = 60, gap = 16, titleH = 30;
+  const cw = (W - gap * (cols + 1)) / cols, ch = (H - top - bottom - gap * (rows - 1)) / rows;
+  let hover = null;
+  for (let head = 0; head < heads; head++) {
+    const cx0 = gap + (head % cols) * (cw + gap), cy0 = top + Math.floor(head / cols) * (ch + gap);
+    ctx.save();
+    ctx.translate(cx0, cy0);
+    ctx.beginPath(); ctx.rect(0, 0, cw, ch); ctx.clip();
+    ctx.strokeStyle = rgba(PAPER, 0.07); ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.roundRect(0.5, 0.5, cw - 1, ch - 1, 8); ctx.stroke();
+
+    const local = { ...S, head, hover: S.hover?.head === head ? S.hover : null, pointer: null };
+    const top1 = sources(local, S.block, 1)[0];
+    ctx.textBaseline = "middle"; ctx.textAlign = "left";
+    ctx.font = serif(17, 400); ctx.fillStyle = rgba(HEAD_COLORS[head]);
+    ctx.fillText(`head ${head + 1}`, 12, 18);
+    if (top1) {
+      ctx.font = MONO; ctx.fillStyle = rgba(MUTED, 0.95);
+      ctx.fillText(`strongest: ${tokenName(S.cfg, top1.j)} · ${(top1.a * 100).toFixed(0)}%`, 84, 19);
+    }
+    ctx.translate(0, titleH);
+    if (S.pointer) {
+      const px = S.pointer[0] - cx0, py = S.pointer[1] - cy0 - titleH;
+      if (px >= 0 && px < cw && py >= 0 && py < ch - titleH) local.pointer = [px, py];
+    }
+    const hv = drawScrub(ctx, cw, ch - titleH, local, { compact: true });
+    ctx.restore();
+    if (hv) hover = { ...hv, head };
+  }
+  return hover;
 }
 
 // ---------- loom: tokens as warp, attention as weft ----------
@@ -513,6 +626,18 @@ export function readingHtml(S) {
     `<span class="dot" style="background:${rgba(HEAD_COLORS[h])}"></span>` +
     `<span class="nm">${tokenName(S.cfg, j)}</span><span class="pct">${(a * 100).toFixed(0)}%</span>` +
     `<span class="bar"><i style="width:${Math.min(100, a * 200)}%;background:${rgba(HEAD_COLORS[h])}"></i></span></div>`).join("");
+  let mlp = "";
+  if (S.subSteps && S.result.mids) {
+    // How far the MLP moves the query, and how that ranks among all tokens.
+    const D = S.cfg.dModel, T = S.cfg.nTokens, before = S.result.mids[b], after = S.result.states[b + 1];
+    const moved = Array.from({ length: T }, (_, t) => {
+      let n = 0;
+      for (let i = 0; i < D; i++) n += (after[t * D + i] - before[t * D + i]) ** 2;
+      return Math.sqrt(n);
+    });
+    const rank = moved.filter((m) => m > moved[S.query]).length + 1;
+    mlp = `<div class="rf">then the MLP moves it by ${moved[S.query].toFixed(1)} · ${rank === 1 ? "the most" : `#${rank}`} of ${T} tokens</div>`;
+  }
   return `<div class="rh"><span class="serif">block ${b + 1}</span> · <b>${tokenName(S.cfg, S.query)}</b> gathers from</div>${rows}` +
-    `<div class="rf">top ${src.length} = ${(total * 100).toFixed(0)}% of ${S.head >= 0 ? `head ${S.head + 1}` : "the mean over heads"}</div>`;
+    `<div class="rf">top ${src.length} = ${(total * 100).toFixed(0)}% of ${S.head >= 0 ? `head ${S.head + 1}` : "the mean over heads"}</div>` + mlp;
 }
