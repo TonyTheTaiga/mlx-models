@@ -3,6 +3,13 @@
 A model-builder's report on the CIFAR-10 ViT in `networks/transformers/vit/`, plus a per-image
 drill-down. The heavy lifting runs in MLX over the full test set (`analyze.py`); the page renders it.
 
+**Heatmaps** — where does it look? Every gallery image with a heat overlay of what its prediction
+leaned on, filterable by class or to mistakes. Two methods, both checked for faithfulness
+(deleting the hottest patches first collapses the prediction far faster than random):
+*occlusion* (per patch) and *gradient × (pixel − mean)* (per pixel). Grad-CAM and last-block CLS
+attention were scored the same way and came out near random for this model, so the page reports
+their scores but doesn't draw them.
+
 **Shortcuts** — is it looking at the right thing?
 - Controlled tests on all 10,000 test images: *border only*, *center only*, *grayscale*,
   *patches shuffled*, *mirrored*. Each class is scored by how much of its above-chance accuracy
@@ -28,7 +35,7 @@ your own, and watch the answer change.
 ## Run
 
 ```bash
-uv run python viz/vit/export.py     # browser model + gallery → viz/vit/web/assets/
+uv run python viz/vit/export.py     # browser model, gallery, heatmaps (~30 s) → viz/vit/web/assets/
 uv run python viz/vit/analyze.py    # full-test-set analysis (~3 min) → assets/analysis.json
 python3 viz/vit/serve.py
 ```

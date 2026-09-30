@@ -53,20 +53,23 @@
 
     <main class="stage">
       <nav class="tabs" id="tabs" role="tablist" aria-label="Views">
-        <button role="tab" data-view="shortcuts" class="on">Shortcuts</button>
+        <button role="tab" data-view="heatmaps" class="on">Heatmaps</button>
+        <button role="tab" data-view="shortcuts">Shortcuts</button>
         <button role="tab" data-view="internals">Internals</button>
         <button role="tab" data-view="inspect">Inspect an image</button>
       </nav>
-      <section class="view report" id="view-shortcuts"></section>
+      <section class="view report" id="view-heatmaps"></section>
+      <section class="view report" id="view-shortcuts" hidden></section>
       <section class="view report" id="view-internals" hidden></section>
       <section class="view inspect" id="view-inspect" hidden>
         <header class="question">
-          <h2>Which patches did the model lean on?</h2>
-          <p>Each patch is hidden in turn — flattened to the image's average color — and scored by how much the prediction's log-probability drops. The ranking is then put to the test: keep only the top patches, or remove them.</p>
+          <h2>Where did the model look?</h2>
+          <p>Heat marks what the prediction leaned on: <b>occlusion</b> hides each patch in turn and measures how much the prediction's log-probability drops; <b>gradient × input</b> estimates the same per pixel. Switch to the keep / remove test to check the ranking holds up.</p>
         </header>
         <div class="evidence">
           <div class="figure"><canvas id="figure"></canvas></div>
           <section class="answer">
+            <div class="scale" id="heatKey"><span>ignored</span><span class="bar heat"></span><span>leaned on most</span></div>
             <div id="answer" aria-live="polite"></div>
             <div class="chart">
               <canvas id="chart"></canvas>

@@ -8,6 +8,7 @@
 
 import { clamp, rgba, oklch, GOLD, PAPER, MUTED, CLASS_COLORS, MONO } from "./util.js";
 import { softmax } from "./model.js";
+import { drawHeat, positive, galleryMap } from "./heatmap.js";
 
 const AGAINST = oklch(0.68, 0.12, 250);
 const logSoftmax = (v) => softmax(v).map((p) => Math.log(Math.max(p, 1e-12)));
@@ -73,6 +74,7 @@ export function drawFigure(ctx, W, H, S) {
   const E = evidence(S);
   const size = Math.min(W, H), x0 = (W - size) / 2, y0 = 0, cell = size / grid, px = cell / win;
   if (S.paintMode) return drawCanvas(ctx, S, x0, y0, size);
+  if (S.ev.view === "heatmap") return drawHeatFigure(ctx, S, E, x0, y0, size, cell);
   const c = targetClass(S), col = CLASS_COLORS[c], m = meanColor(S);
   const k = E.ready ? currentK(S) : n;
   const rank = new Array(n);
@@ -128,6 +130,39 @@ export function drawFigure(ctx, W, H, S) {
   const [mx, my] = S.pointer;
   if (mx < x0 || mx >= x0 + size || my < y0 || my >= y0 + size) return null;
   return { p: Math.floor((my - y0) / cell) * grid + Math.floor((mx - x0) / cell) };
+}
+
+// Where the model looked: the image under a smooth heat layer for the chosen method.
+// Gradient maps come from MLX, so they exist only for unedited gallery images and the predicted
+// class; otherwise the figure falls back to occlusion, which the browser computes live.
+export function heatSource(S) {
+  const gradientOk = S.galleryIndex != null && S.heatmaps && S.ev.cls == null;
+  if (S.ev.method === "gradient" && gradientOk) return { method: "gradient", map: galleryMap(S.heatmaps, S.galleryIndex, "gradient") };
+  const E = evidence(S);
+  return { method: "occlusion", map: E.ready ? positive(E.scores, S.cfg.grid) : null, fallback: S.ev.method === "gradient" };
+}
+function drawHeatFigure(ctx, S, E, x0, y0, size, cell) {
+  const src = heatSource(S);
+  drawHeat(ctx, S.pixels, src.map, x0, y0, size);
+  ctx.strokeStyle = rgba(PAPER, 0.1); ctx.lineWidth = 1; ctx.strokeRect(x0 - 0.5, y0 - 0.5, size + 1, size + 1);
+  ctx.font = MONO; ctx.textAlign = "left"; ctx.textBaseline = "top";
+  if (!src.map) {
+    ctx.fillStyle = rgba(GOLD, 0.95);
+    ctx.fillText(`testing each patch… ${E.done}/${S.cfg.grid ** 2}`, x0 + 10, y0 + 10);
+  } else if (src.fallback) {
+    ctx.fillStyle = rgba(PAPER, 0.85);
+    ctx.fillText("gradient maps exist for unedited gallery images (predicted class); showing occlusion", x0 + 10, y0 + 10);
+  }
+  const hov = S.hover;
+  if (hov) {
+    const g = S.cfg.grid;
+    ctx.strokeStyle = rgba(PAPER, 0.9); ctx.lineWidth = 1.2;
+    ctx.strokeRect(x0 + (hov.p % g) * cell + 0.5, y0 + Math.floor(hov.p / g) * cell + 0.5, cell - 1, cell - 1);
+  }
+  if (!S.pointer) return null;
+  const [mx, my] = S.pointer;
+  if (mx < x0 || mx >= x0 + size || my < y0 || my >= y0 + size) return null;
+  return { p: Math.floor((my - y0) / cell) * S.cfg.grid + Math.floor((mx - x0) / cell) };
 }
 
 // Paint mode: the whole image as it is now, with the patch grid and a brush-footprint cursor.

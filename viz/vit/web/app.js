@@ -8,6 +8,7 @@
 import { $, clamp, rgba, fit, CLASS_COLORS } from "./util.js";
 import { evidence, curvePoints, currentK, predicted, drawFigure, drawChart, answerHtml, tooltipHtml } from "./evidence.js";
 import { renderShortcuts, renderInternals } from "./report.js";
+import { renderHeatmaps } from "./heatmap.js";
 
 // ---------- state ----------
 const S = {
@@ -15,11 +16,13 @@ const S = {
   samples: null, labels: [], preds: [], sampleIndex: 0, source: null, label: null,
   edited: false, // pixels differ from the source image, so its label may no longer apply
   mistakesOnly: false,
-  view: "shortcuts", analysis: null, examples: null,
+  view: "heatmaps", analysis: null, examples: null, heatmaps: null,
+  galleryIndex: null, // the gallery image on screen, while it's unedited
   pixels: new Uint8ClampedArray(32 * 32 * 3),
   result: null, resultId: 0,
   occ: null, occWant: 0, curves: null, curvesWant: 0, curvesKey: "",
-  ev: { cls: null, k: null, heat: false }, // target class (null = prediction), kept k (null = the headline k)
+  // Target class (null = prediction), kept k (null = the headline k), and how the figure shows it.
+  ev: { cls: null, k: null, heat: false, view: "heatmap", method: "occlusion" },
   hover: null, pointer: null,
   brush: 0, paint: [235, 230, 218], paintMode: false, // paint on the big image
 };
@@ -126,10 +129,16 @@ async function boot() {
     // Optional: written by analyze.py.
     fetch("assets/analysis.json").then((r) => (r.ok ? r.json() : null)).catch(() => null),
     fetch("assets/examples.bin").then((r) => (r.ok ? r.arrayBuffer() : null)).catch(() => null),
-  ]);
+    fetch("assets/heatmaps.json").then((r) => (r.ok ? r.json() : null)).catch(() => null),
+    fetch("assets/heatmaps.bin").then((r) => (r.ok ? r.arrayBuffer() : null)).catch(() => null),
+  ]).then((all) => {
+    const [hj, hb] = all.splice(5, 2);
+    S.heatmaps = hj && hb ? { ...hj, gradient: new Uint8Array(hb) } : null;
+    return all;
+  });
   S.analysis = analysis;
   // The report and the browser model must describe the same checkpoint.
-  if (analysis && analysis.fingerprint !== S.cfg.fingerprint) {
+  if ((analysis && analysis.fingerprint !== S.cfg.fingerprint) || (S.heatmaps && S.heatmaps.fingerprint !== S.cfg.fingerprint)) {
     const warn = document.createElement("p");
     warn.className = "stale";
     warn.textContent = "⚠ The analysis and the in-browser model come from different checkpoints. Re-run export.py and analyze.py.";
@@ -156,6 +165,7 @@ function pixelsChanged(edited = true) {
   requestForward();
 }
 function setPixels(px, label = null) {
+  S.galleryIndex = null;
   S.pixels.set(px);
   S.source = { pixels: S.pixels.slice(), label };
   S.label = label;
@@ -165,6 +175,7 @@ function setPixels(px, label = null) {
 function selectSample(i, open = true) {
   S.sampleIndex = i;
   setPixels(S.samples.subarray(i * 3072, (i + 1) * 3072), S.labels[i]);
+  S.galleryIndex = i;
   document.querySelectorAll(".gallery .thumb").forEach((c, k) => c.classList.toggle("on", k === i));
   if (open) setView("inspect"); // picking an image means you want to look at it
 }
@@ -184,6 +195,9 @@ const reportApi = {
     }
     ctx.putImageData(img, 0, 0);
   },
+  inspectSample(i) {
+    selectSample(i);
+  },
   inspectExample(slot, label) {
     document.querySelectorAll(".gallery .thumb.on").forEach((x) => x.classList.remove("on"));
     setPixels(S.examples.subarray(slot * 3072, (slot + 1) * 3072), label);
@@ -197,9 +211,10 @@ function renderView() {
     b.classList.toggle("on", on);
     b.setAttribute("aria-selected", on);
   });
-  for (const v of ["shortcuts", "internals", "inspect"]) $(`view-${v}`).hidden = v !== S.view;
+  for (const v of ["heatmaps", "shortcuts", "internals", "inspect"]) $(`view-${v}`).hidden = v !== S.view;
   if (S.view === "inspect") { invalidate(); return; }
   const root = $(`view-${S.view}`);
+  if (S.view === "heatmaps") { renderHeatmaps(root, S, reportApi); return; }
   if (!S.analysis) {
     root.replaceChildren();
     root.insertAdjacentHTML("beforeend", `<p class="report-empty">No analysis yet. Run <code>uv run python viz/vit/analyze.py</code> (about 2–3 minutes), then reload.</p>`);
@@ -385,6 +400,24 @@ function buildControls() {
       c === (S.ev.cls ?? predicted(S)), () => { S.ev = { ...S.ev, cls: c === predicted(S) ? null : c, k: null }; ensureCurves(); buildControls(); },
       `evidence for ${S.classes[c]}`));
 
+  const seg = (items, cur, set) => {
+    const g = document.createElement("div");
+    g.className = "seg";
+    for (const [key, label] of items) {
+      const b = document.createElement("button");
+      b.textContent = label;
+      b.classList.toggle("on", key === cur);
+      b.setAttribute("aria-pressed", key === cur);
+      b.onclick = () => { set(key); buildControls(); };
+      g.appendChild(b);
+    }
+    box.appendChild(g);
+  };
+  seg([["heatmap", "heatmap"], ["test", "keep / remove test"]], S.ev.view, (v) => (S.ev.view = v));
+  if (S.ev.view === "heatmap") {
+    seg([["occlusion", "occlusion"], ["gradient", "gradient × input"]], S.ev.method, (m) => (S.ev.method = m));
+    return invalidate();
+  }
   const n = S.cfg.grid * S.cfg.grid, k = currentK(S);
   const slider = document.createElement("label");
   slider.className = "slider";
@@ -481,6 +514,7 @@ function frameLoop() {
   if (answer !== lastAnswer) { $("answer").innerHTML = answer; lastAnswer = answer; }
   const chart = $("chart");
   chart.parentElement.style.visibility = curvePoints(S) ? "visible" : "hidden";
+  $("heatKey").hidden = S.ev.view !== "heatmap";
   const [cctx, cW, cH] = fit(chart);
   cctx.clearRect(0, 0, cW, cH);
   drawChart(cctx, cW, cH, S);
