@@ -91,6 +91,23 @@ class Classifier(nn.Module):
         return self.classifier(encoded[:, 0])
 
 
+def load_checkpoint(model: nn.Module, path: str | Path, learned_rope: bool = False) -> dict:
+    """
+    Load weights, tolerating checkpoints saved while Rope2D's freq/pos_idx were still
+    (accidentally) trainable. Those `*.roper.{freq,pos_idx}` entries are dropped unless
+    `learned_rope`, in which case they overwrite the fixed defaults. Returns the roper entries.
+    """
+    weights = mx.load(str(path))
+    rope = {k: v for k, v in weights.items() if k.split(".")[-2:-1] == ["roper"]}
+    model.load_weights([(k, v) for k, v in weights.items() if k not in rope])
+    if learned_rope:
+        modules = dict(model.named_modules())
+        for key, value in rope.items():
+            owner, name = key.rsplit(".", 1)
+            setattr(modules[owner], f"_{name}", value)
+    return rope
+
+
 def loss_fn(model: Classifier, images: mx.array, labels: mx.array) -> mx.array:
     logits = model(images)
     return nn.losses.cross_entropy(logits, labels, reduction="mean")

@@ -1,7 +1,7 @@
 from typing import final, override
 
-import mlx.nn as nn
 import mlx.core as mx
+import mlx.nn as nn
 
 
 class Rope2D(nn.Module):
@@ -10,11 +10,21 @@ class Rope2D(nn.Module):
 
         assert head_dim % 4 == 0
         self.head_dim: int = head_dim
-        self.pos_idx: mx.array = self._init_pos_index(n_rows=n_rows, n_cols=n_cols)
+        # Leading underscores keep these fixed tables out of parameters(), so they are
+        # neither updated by the optimizer nor written by save_weights.
+        self._pos_idx: mx.array = self._init_pos_index(n_rows=n_rows, n_cols=n_cols)
 
         n_freqs = head_dim // 4
         j = mx.arange(n_freqs, dtype=mx.float32)
-        self.freq: mx.array = mx.pow(base, -j / n_freqs)
+        self._freq: mx.array = mx.pow(base, -j / n_freqs)
+
+    @property
+    def pos_idx(self) -> mx.array:
+        return self._pos_idx
+
+    @property
+    def freq(self) -> mx.array:
+        return self._freq
 
     def _init_pos_index(self, n_rows: int, n_cols: int) -> mx.array:
         pos = mx.arange(n_rows * n_cols)
@@ -61,3 +71,4 @@ if __name__ == "__main__":
     after = mx.sum(rotated.reshape(1, 49, 8, 2) ** 2, axis=-1)
     assert mx.allclose(before, after).item()  # Rotation preserves each pair's length.
     assert not mx.allclose(n[:, 1:], rotated[:, 1:]).item()
+    assert not rope.parameters()  # freq/pos_idx are fixed buffers, not trainable weights.
