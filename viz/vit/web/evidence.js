@@ -72,6 +72,7 @@ export function drawFigure(ctx, W, H, S) {
   const n = grid * grid;
   const E = evidence(S);
   const size = Math.min(W, H), x0 = (W - size) / 2, y0 = 0, cell = size / grid, px = cell / win;
+  if (S.paintMode) return drawCanvas(ctx, S, x0, y0, size);
   const c = targetClass(S), col = CLASS_COLORS[c], m = meanColor(S);
   const k = E.ready ? currentK(S) : n;
   const rank = new Array(n);
@@ -127,6 +128,38 @@ export function drawFigure(ctx, W, H, S) {
   const [mx, my] = S.pointer;
   if (mx < x0 || mx >= x0 + size || my < y0 || my >= y0 + size) return null;
   return { p: Math.floor((my - y0) / cell) * grid + Math.floor((mx - x0) / cell) };
+}
+
+// Paint mode: the whole image as it is now, with the patch grid and a brush-footprint cursor.
+function drawCanvas(ctx, S, x0, y0, size) {
+  const px = size / 32;
+  for (let y = 0; y < 32; y++)
+    for (let x = 0; x < 32; x++) {
+      const o = (y * 32 + x) * 3;
+      ctx.fillStyle = `rgb(${S.pixels[o]},${S.pixels[o + 1]},${S.pixels[o + 2]})`;
+      ctx.fillRect(x0 + x * px, y0 + y * px, px + 0.4, px + 0.4);
+    }
+  ctx.strokeStyle = rgba(PAPER, 0.08); ctx.lineWidth = 1;
+  for (let i = 1; i < S.cfg.grid; i++) {
+    const t = (i * size) / S.cfg.grid;
+    ctx.beginPath(); ctx.moveTo(x0 + t, y0); ctx.lineTo(x0 + t, y0 + size); ctx.moveTo(x0, y0 + t); ctx.lineTo(x0 + size, y0 + t); ctx.stroke();
+  }
+  ctx.strokeStyle = rgba(GOLD, 0.6); ctx.strokeRect(x0 - 0.5, y0 - 0.5, size + 1, size + 1);
+  if (S.pointer) {
+    const cx = Math.floor(((S.pointer[0] - x0) / size) * 32), cy = Math.floor(((S.pointer[1] - y0) / size) * 32);
+    if (cx >= 0 && cy >= 0 && cx < 32 && cy < 32) {
+      const r = S.brush;
+      ctx.fillStyle = rgba(S.paint, 0.85);
+      for (let dy = -r; dy <= r; dy++)
+        for (let dx = -r; dx <= r; dx++) {
+          if (dx * dx + dy * dy > r * r + r) continue;
+          ctx.fillRect(x0 + (cx + dx) * px, y0 + (cy + dy) * px, px, px);
+        }
+      ctx.strokeStyle = rgba(PAPER, 0.9);
+      ctx.strokeRect(x0 + (cx - r) * px - 0.5, y0 + (cy - r) * px - 0.5, (2 * r + 1) * px + 1, (2 * r + 1) * px + 1);
+    }
+  }
+  return null; // no hover tooltip while painting
 }
 
 // p(target) as the top patches are kept (class color) or removed (dashed), best first.

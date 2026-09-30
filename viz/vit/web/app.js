@@ -19,7 +19,7 @@ const S = {
   occ: null, occWant: 0, curves: null, curvesWant: 0, curvesKey: "",
   ev: { cls: null, k: null, heat: false }, // target class (null = prediction), kept k (null = the headline k)
   hover: null, pointer: null,
-  brush: 0, paint: [235, 230, 218], showOverlay: true,
+  brush: 0, paint: [235, 230, 218], paintMode: false, // paint on the big image
 };
 
 // Draw on demand: only when something changed.
@@ -134,19 +134,10 @@ async function boot() {
   });
 }
 
-// ---------- the input image ----------
-const inputCtx = $("input").getContext("2d");
-const inputImage = inputCtx.createImageData(32, 32);
-function drawInput() {
-  for (let i = 0; i < 1024; i++) {
-    for (let c = 0; c < 3; c++) inputImage.data[i * 4 + c] = S.pixels[i * 3 + c];
-    inputImage.data[i * 4 + 3] = 255;
-  }
-  inputCtx.putImageData(inputImage, 0, 0);
-}
+// ---------- the image ----------
 function pixelsChanged(edited = true) {
   S.edited = edited;
-  drawInput();
+  invalidate();
   requestForward();
 }
 function setPixels(px, label = null) {
@@ -219,39 +210,41 @@ function buildSwatches() {
 function setPaint(c, btn) {
   S.paint = c;
   document.querySelectorAll(".swatches button").forEach((b) => b.classList.toggle("on", b === btn));
+  setPaintMode(true); // picking a color means you want to paint
+}
+function setPaintMode(on) {
+  if (S.paintMode === on) return;
+  S.paintMode = on;
+  $("figure").classList.toggle("painting", on);
+  buildControls();
 }
 $("brush").onclick = (e) => {
   const b = e.target.closest("button");
   if (!b) return;
   S.brush = +b.dataset.size;
   $("brush").querySelectorAll("button").forEach((x) => x.classList.toggle("on", x === b));
+  setPaintMode(true);
 };
 
-const frame = $("frame");
-let painting = false;
-function paintAt(e) {
-  const r = frame.getBoundingClientRect();
-  const x = Math.floor(((e.clientX - r.left) / r.width) * 32), y = Math.floor(((e.clientY - r.top) / r.height) * 32);
-  if (e.altKey) {
-    if (x < 0 || y < 0 || x > 31 || y > 31) return;
-    const i = (y * 32 + x) * 3;
+// Paint the 32×32 pixel under (x, y) in figure coordinates, or sample it with alt.
+function paintAt(x, y, sample) {
+  const W = figure.clientWidth, H = figure.clientHeight, size = Math.min(W, H), x0 = (W - size) / 2;
+  const px = Math.floor(((x - x0) / size) * 32), py = Math.floor((y / size) * 32);
+  if (px < 0 || py < 0 || px > 31 || py > 31) return;
+  if (sample) {
+    const i = (py * 32 + px) * 3;
     setPaint([S.pixels[i], S.pixels[i + 1], S.pixels[i + 2]], null);
     return;
   }
-  const rad = S.brush;
-  for (let dy = -rad; dy <= rad; dy++)
-    for (let dx = -rad; dx <= rad; dx++) {
-      if (dx * dx + dy * dy > rad * rad + rad) continue;
-      const px = x + dx, py = y + dy;
-      if (px < 0 || py < 0 || px > 31 || py > 31) continue;
-      S.pixels.set(S.paint, (py * 32 + px) * 3);
+  const r = S.brush;
+  for (let dy = -r; dy <= r; dy++)
+    for (let dx = -r; dx <= r; dx++) {
+      if (dx * dx + dy * dy > r * r + r) continue;
+      const qx = px + dx, qy = py + dy;
+      if (qx >= 0 && qy >= 0 && qx < 32 && qy < 32) S.pixels.set(S.paint, (qy * 32 + qx) * 3);
     }
   pixelsChanged();
 }
-frame.addEventListener("pointerdown", (e) => { painting = true; frame.setPointerCapture(e.pointerId); paintAt(e); });
-frame.addEventListener("pointermove", (e) => painting && paintAt(e));
-frame.addEventListener("pointerup", () => (painting = false));
-frame.addEventListener("pointercancel", () => (painting = false));
 
 $("reset").onclick = () => S.source && setPixels(S.source.pixels, S.source.label);
 $("scramble").onclick = () => {
@@ -274,8 +267,6 @@ $("flip").onclick = () => {
     for (let x = 0; x < 32; x++) S.pixels.set(src.subarray((y * 32 + 31 - x) * 3, (y * 32 + 32 - x) * 3), (y * 32 + x) * 3);
   pixelsChanged();
 };
-$("showOverlay").onchange = (e) => { S.showOverlay = e.target.checked; invalidate(); };
-
 // Uploads: center-crop and downsample to 32×32.
 function loadFile(file) {
   if (!file || !file.type.startsWith("image/")) return;
@@ -320,7 +311,10 @@ function buildControls() {
     b.onclick = onclick;
     if (label) b.setAttribute("aria-label", label), (b.title = label);
     box.appendChild(b);
+    return b;
   };
+  add(S.paintMode ? "✓ done painting" : "✎ paint", S.paintMode, () => setPaintMode(!S.paintMode),
+    S.paintMode ? "Back to the evidence (Esc)" : "Paint on the image (P)").classList.add("paint");
   // Evidence for the prediction, or for the runner-up classes ("why not a cat?").
   const probs = S.result.probs;
   const chips = [...probs.keys()].sort((a, b) => probs[b] - probs[a]).slice(0, 3);
@@ -362,7 +356,9 @@ $("answer").onclick = (e) => {
 
 addEventListener("keydown", (e) => {
   if (e.target.tagName === "INPUT" || !S.cfg) return;
-  if (e.key === "ArrowRight" || e.key === "ArrowLeft") {
+  if (e.key === "Escape") setPaintMode(false);
+  else if (e.key === "p") setPaintMode(!S.paintMode);
+  else if (e.key === "ArrowRight" || e.key === "ArrowLeft") {
     const n = S.labels.length;
     selectSample((S.sampleIndex + (e.key === "ArrowRight" ? 1 : n - 1)) % n);
   }
@@ -370,16 +366,26 @@ addEventListener("keydown", (e) => {
 
 // ---------- the figure: hover and click ----------
 const figure = $("figure"), tooltip = $("tooltip");
+let stroking = false;
+const local = (e) => { const r = figure.getBoundingClientRect(); return [e.clientX - r.left, e.clientY - r.top]; };
+figure.addEventListener("pointerdown", (e) => {
+  if (!S.paintMode) return;
+  stroking = true;
+  figure.setPointerCapture(e.pointerId);
+  paintAt(...local(e), e.altKey);
+});
 figure.addEventListener("pointermove", (e) => {
-  const r = figure.getBoundingClientRect();
-  S.pointer = [e.clientX - r.left, e.clientY - r.top];
+  S.pointer = local(e);
+  if (stroking) paintAt(...S.pointer, e.altKey);
   invalidate();
 });
+figure.addEventListener("pointerup", () => (stroking = false));
+figure.addEventListener("pointercancel", () => (stroking = false));
 figure.addEventListener("pointerleave", () => { S.pointer = null; S.hover = null; tooltip.hidden = true; invalidate(); });
 figure.addEventListener("click", () => {
   // Clicking a patch keeps everything down to its rank.
   const E = evidence(S);
-  if (!S.hover || !E.ready) return;
+  if (S.paintMode || !S.hover || !E.ready) return;
   S.ev.k = E.order.indexOf(S.hover.p) + 1;
   buildControls();
 });
@@ -392,20 +398,6 @@ function placeTooltip(html) {
   const w = tooltip.offsetWidth;
   tooltip.style.left = `${Math.max(8, x + w + 30 > st.width ? x - w - 28 : x)}px`;
   tooltip.style.top = `${y}px`;
-}
-
-// ---------- the input overlay: support for the target class ----------
-function drawOverlay(ctx, W, H) {
-  const E = evidence(S);
-  if (!S.showOverlay || !E.ready) return;
-  const { grid } = S.cfg, t = W / grid, max = Math.max(1e-6, ...E.scores), col = CLASS_COLORS[E.c];
-  ctx.fillStyle = "rgba(10,10,15,0.35)";
-  ctx.fillRect(0, 0, W, H);
-  for (let p = 0; p < grid * grid; p++) {
-    const v = Math.max(0, E.scores[p]) / max;
-    ctx.fillStyle = rgba(col, 0.6 * v ** 1.3);
-    ctx.fillRect((p % grid) * t, Math.floor(p / grid) * t, t, t);
-  }
 }
 
 // ---------- loop ----------
@@ -432,9 +424,6 @@ function frameLoop() {
   cctx.clearRect(0, 0, cW, cH);
   drawChart(cctx, cW, cH, S);
 
-  const [octx, oW, oH] = fit($("inputOverlay"));
-  octx.clearRect(0, 0, oW, oH);
-  drawOverlay(octx, oW, oH);
 }
 
 buildSwatches();

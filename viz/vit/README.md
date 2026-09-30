@@ -3,7 +3,8 @@
 An in-browser, image-first answer to one question about the CIFAR-10 ViT in
 `networks/transformers/vit/`: **which patches did the model lean on for its final prediction?**
 The model runs entirely in JavaScript (a Web Worker port of the MLX forward pass, checked against
-MLX on load), so you can paint on an image, drop in your own, and watch the answer change.
+MLX on load), so you can paint straight onto the image (✎ paint, or pick a color), drop in your own picture,
+and watch the answer change.
 
 **Prediction vs. truth first.** A verdict card puts what the model said next to the image's
 CIFAR-10 label, marked ✓ right / ✗ wrong (or ✎ edited once you paint on it, and "no label" for

@@ -18,36 +18,32 @@
         <p class="meta" id="meta">loading weights…</p>
       </header>
 
-      <section class="input">
-        <div class="frame" id="frame">
-          <canvas id="input" width="32" height="32"></canvas>
-          <canvas id="inputOverlay"></canvas>
-        </div>
-        <div class="tools">
-          <div class="swatches" id="swatches"></div>
-          <div class="row">
-            <div class="seg" id="brush" role="group" aria-label="Brush size">
-              <button data-size="0" class="on">·</button>
-              <button data-size="1">•</button>
-              <button data-size="2">●</button>
-            </div>
-            <label class="toggle"><input type="checkbox" id="showOverlay" checked> evidence</label>
+      <section class="tools">
+        <h2>Edit the image</h2>
+        <div class="swatches" id="swatches"></div>
+        <div class="row">
+          <div class="seg" id="brush" role="group" aria-label="Brush size">
+            <button data-size="0" class="on">·</button>
+            <button data-size="1">•</button>
+            <button data-size="2">●</button>
           </div>
-          <div class="row">
-            <button id="reset">reset</button>
-            <button id="scramble">scramble</button>
-            <button id="flip">mirror</button>
-            <label class="file">upload<input type="file" id="upload" accept="image/*"></label>
-          </div>
-          <p class="note">Paint on the image and watch the evidence move. Hold <kbd>alt</kbd> to sample a color, or drop any picture on the page.</p>
         </div>
+        <div class="row">
+          <button id="reset">reset</button>
+          <button id="scramble">scramble</button>
+          <button id="flip">mirror</button>
+          <label class="file">upload<input type="file" id="upload" accept="image/*"></label>
+        </div>
+        <p class="note">Pick a color or brush to paint on the big image. Hold <kbd>alt</kbd> to sample a color, or drop any picture on the page.</p>
       </section>
 
       <section class="gallery-wrap">
         <div class="gallery-head">
           <h2>CIFAR-10 test images</h2>
-          <span class="stat" id="galleryStat"></span>
-          <button id="mistakes" aria-pressed="false">mistakes only</button>
+          <div class="row">
+            <span class="stat" id="galleryStat"></span>
+            <button id="mistakes" aria-pressed="false">mistakes only</button>
+          </div>
         </div>
         <div class="gallery" id="gallery"></div>
       </section>
