@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Lumen</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,300..600;1,9..144,300..600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div class="app">
+    <aside class="panel left">
+      <header class="masthead">
+        <h1>Lumen</h1>
+        <p class="sub">a vision transformer, seen from the inside</p>
+        <p class="meta" id="meta">loading weights…</p>
+      </header>
+
+      <section class="input">
+        <div class="frame" id="frame">
+          <canvas id="input" width="32" height="32"></canvas>
+          <canvas id="inputOverlay"></canvas>
+        </div>
+        <div class="tools">
+          <div class="swatches" id="swatches"></div>
+          <div class="row">
+            <div class="seg" id="brush" role="group" aria-label="Brush size">
+              <button data-size="0" class="on">·</button>
+              <button data-size="1">•</button>
+              <button data-size="2">●</button>
+            </div>
+            <label class="toggle"><input type="checkbox" id="showRollout" checked> rollout</label>
+          </div>
+          <div class="row">
+            <button id="reset">reset</button>
+            <button id="scramble">scramble</button>
+            <button id="flip">mirror</button>
+            <label class="file">upload<input type="file" id="upload" accept="image/*"></label>
+          </div>
+          <p class="note">Paint on the image. Hold <kbd>alt</kbd> to sample a color, or drop any picture on the page.</p>
+        </div>
+      </section>
+
+      <section class="gallery-wrap">
+        <h2>CIFAR-10 test images</h2>
+        <div class="gallery" id="gallery"></div>
+      </section>
+    </aside>
+
+    <main class="stage" id="stageWrap">
+      <canvas id="stage"></canvas>
+      <nav class="modes" id="modes">
+        <button data-mode="tower" class="on">Tower</button>
+        <button data-mode="atlas">Atlas</button>
+        <button data-mode="drift">Drift</button>
+      </nav>
+      <nav class="variants" id="variants" aria-label="Tower variant">
+        <button data-variant="scrub" class="on">scrub</button>
+        <button data-variant="loom">loom</button>
+        <button data-variant="orbit">orbit</button>
+        <button data-variant="stack">stack</button>
+      </nav>
+      <div class="legend" id="legend"></div>
+      <div class="side">
+        <p class="hint" id="hint"></p>
+        <div class="reading" id="reading" hidden></div>
+      </div>
+      <div class="tooltip" id="tooltip" hidden></div>
+    </main>
+
+    <aside class="panel right">
+      <section>
+        <h2>Verdict</h2>
+        <canvas id="bloom"></canvas>
+        <div class="verdict" id="verdict"></div>
+      </section>
+      <section>
+        <h2>Depth lens</h2>
+        <p class="note">The classifier head read out from the CLS token after every block.</p>
+        <canvas id="lens"></canvas>
+      </section>
+      <footer class="check" id="check">verifying against MLX…</footer>
+    </aside>
+  </div>
+  <div class="drop" id="drop">drop an image</div>
+  <script type="module" src="app.js"></script>
+</body>
+</html>
