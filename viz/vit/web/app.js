@@ -1,11 +1,13 @@
 // Lumen — renders the ViT's residual stream and attention as light.
 //
 // Tower: the scrub accordion, one block open at a time — see tower.js.
+// Lineage: which image patches shaped one token — occlusion sweep vs. attention rollout.
 // Atlas: every head's attention map from the query, plus the residual stream mosaic.
 // Drift: the rotary positions each layer learned (they were left trainable).
 
 import { $, clamp, lerp, ease, frac, oklabToRgb, rgba, fit, HEAD_COLORS, CLASS_COLORS, GOLD, PAPER, layerColor } from "./util.js";
 import { drawTower, towerTooltip, readingHtml, traceInfluence, depthName, tokenName as nameOf } from "./tower.js";
+import { drawLineage, lineageTooltip, lineageHtml, lineage } from "./lineage.js";
 
 // ---------- state ----------
 const S = {
@@ -17,7 +19,8 @@ const S = {
   // Tower renders scrub; tower.js also keeps the loom/orbit/stack variants, unused in the UI.
   variant: "scrub", block: 0,
   subSteps: false, splitHeads: false, playing: false, playT: 0, midColors: null,
-  trace: false, traceK: 0, traceF: 0, // tracing a token back down to the pixels blockF: 0, resultId: 0,
+  trace: false, traceK: 0, traceF: 0, // tracing a token back down to the pixels
+  lin: { k: 7, t: 0, method: "occlusion" }, occ: null, occWant: 0, occResult: -1, blockF: 0, resultId: 0,
   yaw: -0.55, pitch: 0.42, dragging: false,
   hover: null, pointer: null, driftPin: -1,
   brush: 0, paint: [235, 230, 218], showRollout: true,
@@ -41,6 +44,7 @@ worker.onmessage = ({ data }) => {
   if (data.type === "ready") {
     S.cfg = data.cfg; S.classes = data.classes; S.rope = data.rope;
     S.block = S.blockF = data.cfg.layers - 1;
+    S.lin.k = data.cfg.layers + 1;
     // Checkpoints trained after the Rope2D fix carry the untouched grid and frequencies.
     const g = data.cfg.grid, nf = data.rope[0].freq.length;
     S.ropeLearned = data.rope.some((L) =>
@@ -56,6 +60,7 @@ worker.onmessage = ({ data }) => {
     S.midColors = tokenColors(data.out.mids, S.pcaMid);
     S.resultId++;
     renderVerdict();
+    if (S.mode === "lineage") requestOcclusion();
     invalidate(true);
     if (pending) { pending = false; requestForward(); }
   } else if (data.type === "check") {
@@ -63,6 +68,47 @@ worker.onmessage = ({ data }) => {
     $("check").textContent = `${ok ? "✓" : "✗"} browser forward pass vs MLX on ${data.n} images: max logit error ${data.worst.toExponential(1)}`;
   }
 };
+
+// Occlusion sweeps (64 forward passes) run on a small worker pool, off the painting worker, so
+// the page stays responsive; each worker takes every n-th patch.
+const occPool = Array.from({ length: clamp((navigator.hardwareConcurrency || 4) - 1, 1, 4) }, () => new Worker("worker.js", { type: "module" }));
+let occTimer = 0, occId = 0, occParts = null;
+function requestOcclusion() {
+  clearTimeout(occTimer);
+  // Debounced so a paint stroke only triggers one sweep once it settles.
+  occTimer = setTimeout(() => {
+    S.occWant = ++occId;
+    S.occResult = S.resultId;
+    S.occ = { id: S.occWant, done: 0, data: null };
+    const n = S.cfg.grid * S.cfg.grid;
+    occParts = { id: S.occWant, done: new Array(occPool.length).fill(0), data: [], left: occPool.length };
+    occPool.forEach((w, i) => {
+      const patches = [...Array(n).keys()].filter((p) => p % occPool.length === i);
+      w.postMessage({ type: "occlude", id: S.occWant, pixels: S.pixels.slice(), patches });
+    });
+    invalidate(true);
+  }, 300);
+}
+occPool.forEach((w, i) => {
+  w.onmessage = ({ data }) => {
+    if (data.id !== S.occWant || !occParts || occParts.id !== data.id) return;
+    if (data.type === "occlusion-progress") occParts.done[i] = data.done;
+    else if (data.type === "occlusion") {
+      occParts.data[i] = data.data;
+      occParts.depths = data.depths;
+      occParts.left--;
+    } else return;
+    const done = occParts.done.reduce((a, b) => a + b, 0);
+    if (occParts.left > 0) S.occ = { id: data.id, done, data: null };
+    else {
+      // Each part only filled its own patches, so the parts sum without overlap.
+      const merged = new Float32Array(occParts.data[0].length);
+      for (const part of occParts.data) for (let j = 0; j < merged.length; j++) merged[j] += part[j];
+      S.occ = { id: data.id, done, data: merged, depths: occParts.depths };
+    }
+    invalidate(true);
+  };
+});
 
 async function boot() {
   const [pca, pcaMid, meta, buf, ref] = await Promise.all([
@@ -274,6 +320,7 @@ const HINTS = {
   loom: "Every token is a vertical thread, recolored at each depth. Attention is woven between rows — bright for the active block, a faint trace for the rest. Scroll or ↑↓ to change block.",
   orbit: "Each ring is one depth, the image unwrapped around its center, with CLS at the heart. Threads spiral from one ring into the next. Scroll or ↑↓ to change block.",
   stack: "The whole stack in 3D. Drag to orbit, scroll or ↑↓ to change the active block, click a tile to follow it.",
+  lineage: "Which image patches shaped this token? Occlusion blanks each patch in turn and measures how far the token moves; rollout follows attention paths. Click a patch to make it the target, a block below to change depth, ↑↓ to step.",
   atlas: "Rows are blocks, columns are heads: where the query looks at each step. Last column is the residual stream itself. Click a patch to make it the query.",
   drift: "RoPE positions were left trainable, so each block learned its own map of where the patches sit. The image is re-assembled at those learned coordinates.",
   driftFixed: "This checkpoint's RoPE positions and frequencies are fixed, so every block uses the same grid — there is no drift to show.",
@@ -296,6 +343,19 @@ function buildLegend() {
     add("cycle", S.driftPin < 0, () => { S.driftPin = -1; buildLegend(); });
     for (let l = 0; l < S.cfg.layers; l++)
       add(`<span class="dot" style="background:${rgba(layerColor(l, S.cfg.layers))}"></span>block ${l + 1}`, S.driftPin === l, () => { S.driftPin = l; buildLegend(); });
+  } else if (S.mode === "lineage") {
+    const step = document.createElement("span");
+    step.className = "stepper";
+    step.innerHTML = `<button data-d="-1" aria-label="Shallower">‹</button><span>${depthName(S.lin.k)}</span><button data-d="1" aria-label="Deeper">›</button>`;
+    step.onclick = (e) => { const b = e.target.closest("button"); if (b) setLineage({ k: S.lin.k + +b.dataset.d }); };
+    L.appendChild(step);
+    add("occlusion", S.lin.method === "occlusion", () => setLineage({ method: "occlusion" }));
+    add("rollout", S.lin.method === "rollout", () => setLineage({ method: "rollout" }));
+    add("CLS", S.lin.t === 0, () => setLineage({ t: 0 }), "Target the CLS token");
+    const q = document.createElement("span");
+    q.className = "query";
+    q.innerHTML = `target <b>${tokenName(S.lin.t)}</b>`;
+    L.appendChild(q);
   } else {
     if (S.mode === "tower") {
       const step = document.createElement("span");
@@ -315,9 +375,10 @@ function buildLegend() {
       for (let h = 0; h < S.cfg.heads; h++)
         add(`<span class="dot" style="background:${rgba(HEAD_COLORS[h])}"></span>${short ? "" : "head "}${h + 1}`, S.head === h, () => setHead(S.head === h ? -1 : h), `head ${h + 1}`);
     }
-    if (S.mode === "tower" && S.trace)
+    if (S.mode === "tower" && S.trace) {
       add(`tracing ${tokenName(S.query)} from ${depthName(S.traceK)} ✕`, true, endTrace, "Stop tracing");
-    else {
+      add("open in Lineage ↗", false, () => { S.lin = { ...S.lin, k: S.traceK, t: S.query }; setMode("lineage"); });
+    } else {
       const q = document.createElement("span");
       q.className = "query";
       q.innerHTML = `query <b>${tokenName(S.query)}</b>`;
@@ -364,7 +425,13 @@ function setBlock(b) {
 function setMode(m) {
   S.mode = m;
   S.hover = null;
+  if (m === "lineage" && S.occResult !== S.resultId) requestOcclusion();
   document.querySelectorAll("#modes button").forEach((b) => b.classList.toggle("on", b.dataset.mode === m));
+  buildLegend();
+}
+function setLineage(patch) {
+  S.lin = { ...S.lin, ...patch };
+  S.lin.k = clamp(S.lin.k, 2, S.cfg.layers + 1);
   buildLegend();
 }
 $("modes").onclick = (e) => { const b = e.target.closest("button"); if (b) setMode(b.dataset.mode); };
@@ -377,7 +444,10 @@ addEventListener("keydown", (e) => {
   else if (e.key === "t") setMode("tower");
   else if (e.key === "a") setMode("atlas");
   else if (e.key === "d") setMode("drift");
-  else if ((e.key === "ArrowUp" || e.key === "ArrowDown") && S.mode === "tower") {
+  else if ((e.key === "ArrowUp" || e.key === "ArrowDown") && S.mode === "lineage") {
+    e.preventDefault();
+    setLineage({ k: S.lin.k + (e.key === "ArrowUp" ? 1 : -1) });
+  } else if ((e.key === "ArrowUp" || e.key === "ArrowDown") && S.mode === "tower") {
     e.preventDefault();
     userBlock(S.block + (e.key === "ArrowUp" ? 1 : -1));
   } else if (e.key === " " && S.mode === "tower") {
@@ -393,12 +463,14 @@ addEventListener("keydown", (e) => {
 let readingKey = "";
 function updateReading(wide) {
   const el = $("reading");
-  el.hidden = S.mode !== "tower" || !wide;
+  el.hidden = (S.mode !== "tower" && S.mode !== "lineage") || !wide;
   if (el.hidden) return;
-  const key = [S.resultId, S.query, S.head, S.block, S.subSteps, S.trace, S.traceK].join();
+  const key = S.mode === "lineage"
+    ? ["lin", S.resultId, S.lin.k, S.lin.t, S.lin.method, S.occ?.id, S.occ?.done, !!S.occ?.data].join()
+    : [S.resultId, S.query, S.head, S.block, S.subSteps, S.trace, S.traceK].join();
   if (key === readingKey) return;
   readingKey = key;
-  el.innerHTML = readingHtml(S);
+  el.innerHTML = S.mode === "lineage" ? lineageHtml(S) : readingHtml(S);
   const { grid, win } = S.cfg;
   el.querySelectorAll("canvas").forEach((c) => {
     const t = +c.dataset.t, cx = c.getContext("2d");
@@ -784,6 +856,10 @@ function handleClick() {
     if (h.k >= 2 && !h.mid) return startTrace(h.k, h.t);
     if (h.k >= 1) userBlock(Math.max(0, h.k - 2));
     setQuery(h.t);
+  } else if (S.mode === "lineage") {
+    if (h?.kind === "lin-patch") setLineage({ t: h.p + 1 });
+    else if (h?.kind === "lin-cls") setLineage({ t: 0 });
+    else if (h?.kind === "lin-depth") setLineage({ k: h.k });
   } else if (S.mode === "atlas") {
     if (h) setQuery(h.token === S.query ? 0 : h.token);
     else setQuery(0);
@@ -795,7 +871,12 @@ function drawOverlay(ctx, W, H) {
   if (!S.showRollout) return;
   const { grid, nTokens: T } = S.cfg;
   // While tracing, show the traced token's own lineage; otherwise full rollout from the top.
-  const traced = S.mode === "tower" && S.trace ? traceInfluence(S)[1] : null;
+  let traced = S.mode === "tower" && S.trace ? traceInfluence(S)[1] : null;
+  if (S.mode === "lineage") {
+    const L = lineage(S);
+    if (!L.ready) return;
+    traced = Float32Array.from({ length: T }, (_, i) => (i === 0 ? L.cls : L.patches[i - 1]));
+  }
   const R = traced || S.result.rollout.subarray(S.query * T, S.query * T + T);
   let max = 1e-6;
   for (let p = 1; p < T; p++) max = Math.max(max, R[p]);
@@ -856,6 +937,10 @@ function frameLoop(now) {
       // On wide screens the reading card takes a column on the right.
       S.hover = drawTower(ctx, wide ? W - 250 : W, H, S);
       if (S.hover) showTooltip(towerTooltip(S, S.hover));
+      else hideTooltip();
+    } else if (S.mode === "lineage") {
+      S.hover = drawLineage(ctx, wide ? W - 250 : W, H, S);
+      if (S.hover) showTooltip(lineageTooltip(S, S.hover));
       else hideTooltip();
     } else if (S.mode === "atlas") drawAtlas(ctx, W, H);
     else drawDrift(ctx, W, H);

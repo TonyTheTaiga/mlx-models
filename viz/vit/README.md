@@ -15,6 +15,13 @@ and watch attention and the residual stream change live.
   into its state between the two, with one stroke per token for how far the MLP moves it; and
   **split heads** shows a compact scrub per head, side by side. (`tower.js` also
   keeps three unused alternates — loom, orbit, stack — selectable via `S.variant`.)
+- **Lineage** — *which image patches shaped this token?* Pick a target (any patch or CLS, at any
+  block) and the image is redrawn as a mosaic sized and lit by each patch's share, with threads
+  from the top five sources. Two methods: **occlusion** (blank each patch to the image's mean
+  color and measure how far the target moves — causal, includes the MLPs; a 64-pass sweep split
+  across a small worker pool) and **rollout** (attention paths). A strip below repeats the
+  question after every block, so you can watch the receptive field grow; the card cross-checks
+  the two methods. From a Tower trace, "open in Lineage" jumps here with the same target.
 - **Atlas** — every head's attention map from the query, block by block, next to the residual stream.
 - **Drift** — Rope2D's `freq`/`pos_idx` were trainable, so each block learned its own patch
   coordinates; the image is re-assembled at those learned positions.

@@ -50,14 +50,14 @@ export function sources(S, b, limit) {
 // heads are averaged and the residual path is counted (0.5·A + 0.5·I); MLPs and values are
 // ignored, so this is the standard rollout approximation, not an exact attribution.
 // Returns infl[d] for depths 1..k: how much each token at depth d feeds the traced token.
-let traceMemo = { key: "", infl: null };
-export function traceInfluence(S) {
-  const key = [S.resultId, S.traceK, S.query].join();
-  if (traceMemo.key === key) return traceMemo.infl;
+const rolloutMemo = new Map();
+export function rolloutFrom(S, k, q) {
+  const key = [S.resultId, k, q].join();
+  if (rolloutMemo.has(key)) return rolloutMemo.get(key);
   const { nTokens: T, heads } = S.cfg;
   const infl = [];
-  infl[S.traceK] = Float32Array.from({ length: T }, (_, t) => (t === S.query ? 1 : 0));
-  for (let d = S.traceK; d >= 2; d--) {
+  infl[k] = Float32Array.from({ length: T }, (_, t) => (t === q ? 1 : 0));
+  for (let d = k; d >= 2; d--) {
     const A = S.result.attn[d - 2], up = infl[d], down = new Float32Array(T);
     for (let i = 0; i < T; i++) {
       if (up[i] === 0) continue;
@@ -69,9 +69,11 @@ export function traceInfluence(S) {
     }
     infl[d - 1] = down;
   }
-  traceMemo = { key, infl };
+  if (rolloutMemo.size > 64) rolloutMemo.clear();
+  rolloutMemo.set(key, infl);
   return infl;
 }
+export const traceInfluence = (S) => rolloutFrom(S, S.traceK, S.query);
 // One attention thread: a soft underglow when active, then a crisp core.
 function thread(ctx, path, a, color, active, k = 1) {
   if (active) {
