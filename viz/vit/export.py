@@ -136,20 +136,12 @@ def occlusion(model: Classifier, images: np.ndarray, target: np.ndarray, grid: i
     return out
 
 
-def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--checkpoint", type=Path, default=Path("training/vit/checkpoints/cifar10"))
-    parser.add_argument("--weights", default="best.npz")
-    parser.add_argument("--samples-per-class", type=int, default=16)
-    args = parser.parse_args()
-
-    ckpt = ROOT / args.checkpoint
+def load_model(ckpt: Path, weights: str = "best.npz") -> tuple[Classifier, dict, list[str]]:
+    """The checkpoint's model (eval mode), its config, and the class names."""
     with open(ckpt / "config.yaml") as f:
         config = yaml.safe_load(f)
     dataset_config = config["dataset"]
-    data_root = ROOT / dataset_config["path"]
-    class_names = (data_root / "classes.txt").read_text().split()
-
+    class_names = (ROOT / dataset_config["path"] / "classes.txt").read_text().split()
     model = Classifier(
         num_classes=len(class_names),
         image_size=dataset_config["image_size"],
@@ -158,10 +150,13 @@ def main():
     )
     # Older checkpoints carry Rope2D tables that were (accidentally) trained; keep them so the
     # export reproduces the model as it was evaluated.
-    load_checkpoint(model, ckpt / args.weights, learned_rope=True)
+    load_checkpoint(model, ckpt / weights, learned_rope=True)
     model.eval()
-    OUT.mkdir(parents=True, exist_ok=True)
+    return model, config, class_names
 
+
+def write_weights(model, config, class_names, ckpt_file: Path, out: Path) -> tuple[dict, int]:
+    """weights.bin + weights.json for the browser model (model.js)."""
     # Rope2D's tables aren't parameters anymore, so add them explicitly: learned ones from old
     # checkpoints, the fixed defaults otherwise. The browser needs them either way.
     weights = {k: np.array(v, dtype=np.float32) for k, v in tree_flatten(model.parameters())}
@@ -170,21 +165,37 @@ def main():
         weights[f"{prefix}.freq"] = np.array(block.roper.freq, dtype=np.float32)
         weights[f"{prefix}.pos_idx"] = np.array(block.roper.pos_idx, dtype=np.float32)
     manifest, offset = {}, 0
-    with open(OUT / "weights.bin", "wb") as f:
+    with open(out / "weights.bin", "wb") as f:
         for name, value in sorted(weights.items()):
             manifest[name] = [offset, list(value.shape)]
             f.write(value.tobytes())
             offset += value.size
-    with open(OUT / "weights.json", "w") as f:
+    with open(out / "weights.json", "w") as f:
         json.dump(
             {
                 "config": config,
                 "classes": class_names,
                 "tensors": manifest,
-                "fingerprint": fingerprint(ckpt / args.weights),
+                "fingerprint": fingerprint(ckpt_file),
             },
             f,
         )
+    return manifest, offset
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--checkpoint", type=Path, default=Path("training/vit/checkpoints/cifar10"))
+    parser.add_argument("--weights", default="best.npz")
+    parser.add_argument("--samples-per-class", type=int, default=16)
+    args = parser.parse_args()
+
+    ckpt = ROOT / args.checkpoint
+    model, config, class_names = load_model(ckpt, args.weights)
+    dataset_config = config["dataset"]
+    data_root = ROOT / dataset_config["path"]
+    OUT.mkdir(parents=True, exist_ok=True)
+    manifest, offset = write_weights(model, config, class_names, ckpt / args.weights, OUT)
 
     # Gallery samples, with MLX's prediction for each so the gallery can mark mistakes.
     images, labels = load_split(data_root / "test", args.samples_per_class, seed=0)

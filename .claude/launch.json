@@ -9,6 +9,17 @@
       ],
       "port": 8765,
       "autoPort": true
+    },
+    {
+      "name": "gaze",
+      "runtimeExecutable": "python3",
+      "runtimeArgs": [
+        "viz/vit/serve.py",
+        "--dir",
+        "viz/gaze/web"
+      ],
+      "port": 8766,
+      "autoPort": true
     }
   ]
 }

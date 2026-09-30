@@ -1,4 +1,4 @@
-"""Serve the visualizer with caching disabled, so edits show up on a plain reload."""
+"""Serve a static site (Lumen by default) with caching disabled, so edits show on a plain reload."""
 
 import argparse
 import os
@@ -16,7 +16,10 @@ class NoCacheHandler(SimpleHTTPRequestHandler):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--port", type=int, default=int(os.environ.get("PORT", 8765)))
+    parser.add_argument(
+        "--dir", type=Path, default=Path(__file__).parent / "web", help="site to serve"
+    )
     args = parser.parse_args()
-    handler = partial(NoCacheHandler, directory=str(Path(__file__).parent / "web"))
-    print(f"Lumen on http://localhost:{args.port}")
+    handler = partial(NoCacheHandler, directory=str(args.dir))
+    print(f"Serving {args.dir} on http://localhost:{args.port}")
     ThreadingHTTPServer(("", args.port), handler).serve_forever()
