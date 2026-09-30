@@ -1,4 +1,4 @@
-dataset: /path/to/hr_images
+dataset: ../../data/div2k/train
 epochs: 50
 batch_size: 8
 learning_rate: 0.01
@@ -14,5 +14,5 @@ l1_weight: 0.15
 ssim_weight: 0.85
 structural_weight: 1.0
 perceptual_weight: 0.1
-vgg_weights: ../networks/vgg16/weights.npz
-checkpoint_dir: null
+vgg_weights: ../../networks/vgg16/weights.npz
+checkpoint_dir: checkpoints/div2k

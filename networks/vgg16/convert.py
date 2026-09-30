@@ -2,6 +2,8 @@
 Converts the pretrained torchvision weights into MLX format
 """
 
+from pathlib import Path
+
 import numpy as np
 import torch
 import torchvision
@@ -14,7 +16,7 @@ def convert():
     state_dict = {}
     for k, v in torch_weights.items():
         if len(v.shape) == 4:
-            v = v.permute(0, 3, 2, 1)
+            v = v.permute(0, 2, 3, 1)
         elif len(v.shape) == 2 and "classifier.0" in k:
             in_features = v.shape[1]
             spatial_dim = int(np.sqrt((in_features / FEATURE_DIM)))
@@ -27,7 +29,7 @@ def convert():
         k = ".".join(k)
         state_dict[k] = v.numpy()
 
-    np.savez("weights", **state_dict)
+    np.savez(Path(__file__).with_name("weights.npz"), **state_dict)
 
 
 if __name__ == "__main__":
