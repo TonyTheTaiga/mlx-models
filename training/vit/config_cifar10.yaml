@@ -1,0 +1,20 @@
+model:
+  win_size: 4
+  n_layers: 6
+  d_model: 128
+  n_heads: 4
+
+training:
+  batch_size: 128
+  learning_rate: 0.001
+  epochs: 20
+  warmup_steps: 400
+  cosine_decay: true
+
+dataset:
+  name: cifar10
+  path: data/cifar10
+  image_size: 32
+  channels: 3
+
+checkpoint_dir: training/vit/checkpoints/cifar10

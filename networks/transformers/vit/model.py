@@ -7,7 +7,7 @@ from networks.transformers.modules.rope import Rope2D
 
 
 class EncoderBlock(nn.Module):
-    def __init__(self, n_heads: int, d_model: int):
+    def __init__(self, n_heads: int, d_model: int, n_rows: int, n_cols: int):
         super().__init__()
 
         self.proj = nn.Linear(input_dims=d_model, output_dims=3 * d_model, bias=False)
@@ -17,7 +17,7 @@ class EncoderBlock(nn.Module):
         self.pn1 = nn.LayerNorm(dims=d_model)
         self.pn2 = nn.LayerNorm(dims=d_model)
 
-        self.roper = Rope2D(head_dim=d_model // n_heads, n_rows=4, n_cols=4, base=100)
+        self.roper = Rope2D(head_dim=d_model // n_heads, n_rows=n_rows, n_cols=n_cols, base=100)
 
         self.feed_forward = nn.Sequential(
             *[
@@ -68,17 +68,25 @@ class Vit(nn.Module):
         self,
         win_size: int,
         n_layers: int,
-        patch_features: int,
         d_model: int,
         n_heads: int,
+        image_size: int,
+        channels: int,
     ):
         super().__init__()
+        assert image_size % win_size == 0, "image_size needs to be cleanly divisible by win_size"
         self.win_size: int = win_size
+        grid = image_size // win_size
 
-        self.proj = nn.Linear(input_dims=patch_features, output_dims=d_model, bias=False)
+        self.proj = nn.Linear(
+            input_dims=win_size * win_size * channels, output_dims=d_model, bias=False
+        )
 
         self.encoder_stack = nn.Sequential(
-            *[EncoderBlock(n_heads=n_heads, d_model=d_model) for _ in range(n_layers)]
+            *[
+                EncoderBlock(n_heads=n_heads, d_model=d_model, n_rows=grid, n_cols=grid)
+                for _ in range(n_layers)
+            ]
         )
 
     def preprocess(self, x: mx.array) -> mx.array:
@@ -97,23 +105,18 @@ class Vit(nn.Module):
 
 
 def patchify(x: mx.array, win_size: int) -> mx.array:
-    assert x.shape[1] % win_size == 0 and x.shape[2] % win_size == 0, (
-        "h, w needs to be cleanly divisible by win_size"
+    """
+    x (mx.array): (b, h, w, c) -> (b, num_patches, win_size * win_size * c), patches row-major
+    """
+    batch, h, w, c = x.shape
+    assert h % win_size == 0 and w % win_size == 0, "h, w needs to be cleanly divisible by win_size"
+
+    rows, cols = h // win_size, w // win_size
+    return (
+        x.reshape(batch, rows, win_size, cols, win_size, c)
+        .transpose(0, 1, 3, 2, 4, 5)
+        .reshape(batch, rows * cols, win_size * win_size * c)
     )
-
-    def _patch_item(_input: mx.array) -> mx.array:
-        _patches: list[mx.array] = []
-        for _y in range(0, _input.shape[0], win_size):
-            for _x in range(0, _input.shape[1], win_size):
-                _patches.append(_input[_y : _y + win_size, _x : _x + win_size].flatten())
-
-        return mx.stack(_patches)
-
-    patches: list[mx.array] = []
-    for item in x:
-        patches.append(_patch_item(item))
-
-    return mx.stack(patches)
 
 
 if __name__ == "__main__":
@@ -124,7 +127,7 @@ if __name__ == "__main__":
     # x = mx.fast.scaled_dot_product_attention(q, k, v, scale=16)
     # print(x.shape)
 
-    model = Vit(win_size=7, n_layers=4, patch_features=49, d_model=32, n_heads=1)
+    model = Vit(win_size=7, n_layers=4, d_model=32, n_heads=1, image_size=28, channels=1)
     _input = model.preprocess(mx.random.normal(shape=(2, 28, 28, 1)))
     mx.eval(model(_input))
     mx.metal.start_capture("vit.gputrace")
