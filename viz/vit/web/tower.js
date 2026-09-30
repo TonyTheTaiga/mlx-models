@@ -46,6 +46,32 @@ export function sources(S, b, limit) {
   return out.sort((x, y) => y.a - x.a).slice(0, limit).filter((e) => e.a > 0.012);
 }
 
+// Trace: attention rollout from one token at depth k back down to the pixels. Each block's
+// heads are averaged and the residual path is counted (0.5·A + 0.5·I); MLPs and values are
+// ignored, so this is the standard rollout approximation, not an exact attribution.
+// Returns infl[d] for depths 1..k: how much each token at depth d feeds the traced token.
+let traceMemo = { key: "", infl: null };
+export function traceInfluence(S) {
+  const key = [S.resultId, S.traceK, S.query].join();
+  if (traceMemo.key === key) return traceMemo.infl;
+  const { nTokens: T, heads } = S.cfg;
+  const infl = [];
+  infl[S.traceK] = Float32Array.from({ length: T }, (_, t) => (t === S.query ? 1 : 0));
+  for (let d = S.traceK; d >= 2; d--) {
+    const A = S.result.attn[d - 2], up = infl[d], down = new Float32Array(T);
+    for (let i = 0; i < T; i++) {
+      if (up[i] === 0) continue;
+      down[i] += 0.5 * up[i];
+      for (let h = 0; h < heads; h++) {
+        const row = A[h];
+        for (let j = 0; j < T; j++) down[j] += (0.5 / heads) * up[i] * row[i * T + j];
+      }
+    }
+    infl[d - 1] = down;
+  }
+  traceMemo = { key, infl };
+  return infl;
+}
 // One attention thread: a soft underglow when active, then a crisp core.
 function thread(ctx, path, a, color, active, k = 1) {
   if (active) {
@@ -100,7 +126,7 @@ function orb(ctx, x, y, r, color, { halo = false, ring = null } = {}) {
 }
 
 export function drawTower(ctx, W, H, S) {
-  if (S.variant === "scrub" && S.splitHeads) return drawHeadGrid(ctx, W, H, S);
+  if (S.variant === "scrub" && S.splitHeads && !S.trace && S.traceF < 0.01) return drawHeadGrid(ctx, W, H, S);
   const fn = { scrub: drawScrub, loom: drawLoom, orbit: drawOrbit, stack: drawStack }[S.variant];
   return fn(ctx, W, H, S);
 }
@@ -117,7 +143,10 @@ export function towerTooltip(S, h) {
     for (let i = 0; i < D; i++) n += x[h.t * D + i] ** 2;
     s += ` · ‖x‖ ${Math.sqrt(n).toFixed(1)}`;
   }
-  if (h.k === S.block + 1) s += ` · ${tokenName(S.cfg, S.query)} takes ${(weight(S, S.block, h.t) * 100).toFixed(1)}%`;
+  if (S.trace && h.k >= 0 && h.k <= S.traceK) {
+    const row = traceInfluence(S)[Math.max(1, h.k)];
+    s += ` · feeds the traced token ${(row[h.t] * 100).toFixed(1)}%`;
+  } else if (h.k === S.block + 1) s += ` · ${tokenName(S.cfg, S.query)} takes ${(weight(S, S.block, h.t) * 100).toFixed(1)}%`;
   return s;
 }
 
@@ -136,11 +165,23 @@ function drawScrub(ctx, W, H, S, { compact = false } = {}) {
     return [X, -(y * cp + Z * sp)];
   };
   const G = steps ? 1.6 : 1.05;
+  // Tracing unfolds every plate from the traced depth down to the pixels.
+  const tf = compact ? 0 : S.traceF, trK = S.traceK;
+  const infl = tf > 0 ? traceInfluence(S) : null;
   const ys = [0];
-  for (let i = 0; i < K - 1; i++) ys.push(ys[i] + lerp(0.085, G, clamp(1 - Math.abs(i - src), 0, 1)));
-  const open = (k) => clamp(1 - Math.min(Math.abs(k - src), Math.abs(k - src - 1)), 0, 1);
+  for (let i = 0; i < K - 1; i++)
+    ys.push(ys[i] + lerp(lerp(0.085, G, clamp(1 - Math.abs(i - src), 0, 1)), i < trK ? 0.5 : 0.085, tf));
+  const open = (k) => lerp(clamp(1 - Math.min(Math.abs(k - src), Math.abs(k - src - 1)), 0, 1), k <= trK ? 1 : 0, tf);
+  // How strongly token t at depth k feeds the traced token, 0..1 within that depth.
+  const inflMax = infl ? infl.map((row) => (row ? Math.max(...row) : 1)) : null;
+  const lit = (k, t) => {
+    if (!infl || k > trK) return 1;
+    // Pixels share the embedding's influence: patch p is embedded as token p + 1.
+    const v = infl[Math.max(1, k)][t] / inflMax[Math.max(1, k)];
+    return lerp(1, 0.18 + 0.82 * Math.pow(v, 0.6), tf);
+  };
   const yMid = ys[b + 1] + (ys[b + 2] - ys[b + 1]) * 0.56;
-  const showMid = steps && fade > 0;
+  const showMid = steps && fade > 0 && tf < 0.01;
 
   // Fit the accordion to the stage (just the open pair when compact).
   let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
@@ -215,34 +256,37 @@ function drawScrub(ctx, W, H, S, { compact = false } = {}) {
         const [a, bq, , d] = q;
         ctx.save();
         ctx.transform((bq[0] - a[0]) / 4, (bq[1] - a[1]) / 4, (d[0] - a[0]) / 4, (d[1] - a[1]) / 4, a[0], a[1]);
-        patchPixels(ctx, S, p, 0, 0, 4, 0.15 + 0.85 * o);
+        patchPixels(ctx, S, p, 0, 0, 4, (0.15 + 0.85 * o) * lit(0, p + 1));
         ctx.restore();
       } else {
         quadPath(ctx, q);
-        ctx.fillStyle = rgba(S.colors[k - 1][p + 1], (above ? 0.03 : 0.07) + 0.88 * o);
+        ctx.fillStyle = rgba(S.colors[k - 1][p + 1], ((above ? 0.03 : 0.07) + 0.88 * o) * lit(k, p + 1));
         ctx.fill();
       }
     });
-    if (o > 0.5 && S.query > 0) ring(quads[S.query - 1], rgba(GOLD, 0.95), 1.6);
+    if (o > 0.5 && S.query > 0 && (tf < 0.5 || k === trK)) ring(quads[S.query - 1], rgba(GOLD, 0.95), 1.6);
     if (o > 0.5 && hovered?.kind === "token" && !hovered.mid && hovered.k === k && hovered.t > 0) ring(quads[hovered.t - 1], rgba(PAPER, 0.9), 1.2);
     let orbHit = null;
     if (k >= 1) {
       const [x, yy] = pos(k, 0);
       const r = 3 + 4 * o;
+      ctx.globalAlpha = lit(k, 0);
       orb(ctx, x, yy, r, S.colors[k - 1][0], { halo: o > 0.5, ring: o > 0.5 && S.query === 0 ? rgba(GOLD, 0.9) : null });
+      ctx.globalAlpha = 1;
       if (o > 0.5) orbHit = [x, yy, r + 6];
     }
     if (!compact) {
       const lx = P(0.5, y, 0.5);
-      label(ctx, depthName(k), lx[0] + 18, lx[1], { active: o > 0.5, big: W >= 500 && Math.round(src) + 1 === k });
+      const bigK = tf > 0.5 ? trK : Math.round(src) + 1;
+      label(ctx, depthName(k), lx[0] + 18, lx[1], { active: o > 0.5, big: W >= 500 && bigK === k });
     }
     drawn.push({ k, quads: o > 0.5 ? quads : null, orb: orbHit, mid: false });
     if (showMid && k === b + 1) drawMid();
   }
 
   // Attention, the MLP, and the residual path for the active block, fading in after a scrub.
-  if (fade > 0) {
-    ctx.globalAlpha = fade;
+  if (fade * (1 - tf) > 0.01) {
+    ctx.globalAlpha = fade * (1 - tf);
     const Qy = showMid ? yMid : ys[b + 2];
     const reach = showMid ? (yMid - ys[b + 1]) * 0.43 : 0.45;
     const Q = posAt(Qy, S.query), Qc = [Q[0], Q[1] + scale * reach];
@@ -292,6 +336,58 @@ function drawScrub(ctx, W, H, S, { compact = false } = {}) {
         caption((ys[b + 1] + yMid) / 2, attnCaption);
         caption((yMid + ys[b + 2]) / 2 + 0.04, [[narrow ? "↑ MLP" : "↑ MLP, each token alone", rgba(PAPER, 0.75)]]);
       } else caption((ys[b + 1] + ys[b + 2]) / 2, attnCaption);
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  // The trace: every token's influence splits at each block into its own residual path
+  // (half, drawn as a dashed spine) and attention to other tokens (half, spread by the mean
+  // attention). Attention flows are scaled among themselves so the residual can't drown them.
+  if (infl) {
+    ctx.globalAlpha = tf;
+    ctx.lineCap = "round";
+    const { nTokens: T, heads } = S.cfg;
+    for (let d = 2; d <= trK; d++) {
+      const flows = [], A = S.result.attn[d - 2];
+      const reach = scale * (ys[d] - ys[d - 1]) * 0.45;
+      const upMax = Math.max(...infl[d]);
+      for (let i = 0; i < T; i++) {
+        const u = infl[d][i];
+        if (u < 1e-4) continue;
+        // Residual spine for the tokens that matter most at this depth.
+        const r = u / upMax;
+        if (r > 0.15) {
+          const a = pos(d - 1, i), c = pos(d, i);
+          ctx.setLineDash([3, 4]);
+          ctx.strokeStyle = rgba(GOLD, 0.15 + 0.55 * r); ctx.lineWidth = 0.8 + 2 * r;
+          ctx.beginPath(); ctx.moveTo(a[0], a[1]); ctx.lineTo(c[0], c[1]); ctx.stroke();
+          ctx.setLineDash([]);
+        }
+        for (let j = 0; j < T; j++) {
+          let a = 0;
+          for (let h = 0; h < heads; h++) a += A[h][i * T + j];
+          if (j !== i) flows.push([i, j, u * 0.5 * (a / heads)]);
+        }
+      }
+      flows.sort((x, y) => y[2] - x[2]);
+      const top = flows.slice(0, 24), most = top[0]?.[2] || 1;
+      for (const [i, j, f] of top.reverse()) {
+        const r = f / most, A0 = pos(d - 1, j), B = pos(d, i);
+        ctx.strokeStyle = rgba(GOLD, 0.15 + 0.75 * r);
+        ctx.lineWidth = 0.6 + 4 * r;
+        ctx.beginPath(); ctx.moveTo(A0[0], A0[1]);
+        ctx.bezierCurveTo(A0[0], A0[1] - reach, B[0], B[1] + reach, B[0], B[1]);
+        ctx.stroke();
+      }
+    }
+    // Embedding → pixels is one patch to one token: straight shafts.
+    const e = infl[1], most = Math.max(...e.subarray(1));
+    for (let t = 1; t < T; t++) {
+      const r = e[t] / most;
+      if (r < 0.2) continue;
+      const A = pos(0, t), B = pos(1, t);
+      ctx.strokeStyle = rgba(GOLD, 0.1 + 0.7 * r); ctx.lineWidth = 0.6 + 3.5 * r;
+      ctx.beginPath(); ctx.moveTo(A[0], A[1]); ctx.lineTo(B[0], B[1]); ctx.stroke();
     }
     ctx.globalAlpha = 1;
   }
@@ -618,6 +714,18 @@ function drawStack(ctx, W, H, S) {
 
 // ---------- the "reading" card ----------
 export function readingHtml(S) {
+  if (S.trace) {
+    // The image patches whose embeddings the traced token draws on most.
+    const e = traceInfluence(S)[1];
+    const top = [...e.keys()].filter((t) => t > 0).sort((x, y) => e[y] - e[x]).slice(0, 5);
+    const rows = top.map((t) =>
+      `<div class="rr"><canvas data-t="${t}" width="4" height="4"></canvas><span class="dot" style="background:${rgba(GOLD)}"></span>` +
+      `<span class="nm">${tokenName(S.cfg, t)}</span><span class="pct">${(e[t] * 100).toFixed(0)}%</span>` +
+      `<span class="bar"><i style="width:${Math.min(100, (e[t] / e[top[0]]) * 100)}%;background:${rgba(GOLD)}"></i></span></div>`).join("");
+    return `<div class="rh"><span class="serif">trace</span> · <b>${tokenName(S.cfg, S.query)}</b> at ${depthName(S.traceK)} comes most from</div>${rows}` +
+      `<div class="rf">${(e[0] * 100).toFixed(0)}% traces back to the CLS embedding, not the image</div>` +
+      `<div class="rf">rollout: heads averaged, residual counted, MLPs ignored · Esc to close</div>`;
+  }
   const b = S.block;
   const src = sources(S, b, 5);
   const total = src.reduce((s, e) => s + e.a, 0);

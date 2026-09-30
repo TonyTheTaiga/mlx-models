@@ -5,7 +5,7 @@
 // Drift: the rotary positions each layer learned (they were left trainable).
 
 import { $, clamp, lerp, ease, frac, oklabToRgb, rgba, fit, HEAD_COLORS, CLASS_COLORS, GOLD, PAPER, layerColor } from "./util.js";
-import { drawTower, towerTooltip, readingHtml, tokenName as nameOf } from "./tower.js";
+import { drawTower, towerTooltip, readingHtml, traceInfluence, depthName, tokenName as nameOf } from "./tower.js";
 
 // ---------- state ----------
 const S = {
@@ -16,7 +16,8 @@ const S = {
   query: 0, head: -1, mode: "tower",
   // Tower renders scrub; tower.js also keeps the loom/orbit/stack variants, unused in the UI.
   variant: "scrub", block: 0,
-  subSteps: false, splitHeads: false, playing: false, playT: 0, midColors: null, blockF: 0, resultId: 0,
+  subSteps: false, splitHeads: false, playing: false, playT: 0, midColors: null,
+  trace: false, traceK: 0, traceF: 0, // tracing a token back down to the pixels blockF: 0, resultId: 0,
   yaw: -0.55, pitch: 0.42, dragging: false,
   hover: null, pointer: null, driftPin: -1,
   brush: 0, paint: [235, 230, 218], showRollout: true,
@@ -269,7 +270,7 @@ addEventListener("drop", (e) => {
 
 // ---------- legend & modes ----------
 const HINTS = {
-  scrub: "Scroll or ↑↓ to move through depth. Only the active block opens: curves are attention into the query, the dotted line is its residual path. Click a tile to follow it, or a closed plate to open it. Space plays the query up through every block.",
+  scrub: "Scroll or ↑↓ to move through depth. Only the active block opens: curves are attention into the query, the dotted line is its residual path. Click a block's tile to trace it back down to the image patches that shaped it (Esc to return), or a closed plate to open it. Space plays the query up through every block.",
   loom: "Every token is a vertical thread, recolored at each depth. Attention is woven between rows — bright for the active block, a faint trace for the rest. Scroll or ↑↓ to change block.",
   orbit: "Each ring is one depth, the image unwrapped around its center, with CLS at the heart. Threads spiral from one ring into the next. Scroll or ↑↓ to change block.",
   stack: "The whole stack in 3D. Drag to orbit, scroll or ↑↓ to change the active block, click a tile to follow it.",
@@ -314,10 +315,14 @@ function buildLegend() {
       for (let h = 0; h < S.cfg.heads; h++)
         add(`<span class="dot" style="background:${rgba(HEAD_COLORS[h])}"></span>${short ? "" : "head "}${h + 1}`, S.head === h, () => setHead(S.head === h ? -1 : h), `head ${h + 1}`);
     }
-    const q = document.createElement("span");
-    q.className = "query";
-    q.innerHTML = `query <b>${tokenName(S.query)}</b>`;
-    L.appendChild(q);
+    if (S.mode === "tower" && S.trace)
+      add(`tracing ${tokenName(S.query)} from ${depthName(S.traceK)} ✕`, true, endTrace, "Stop tracing");
+    else {
+      const q = document.createElement("span");
+      q.className = "query";
+      q.innerHTML = `query <b>${tokenName(S.query)}</b>`;
+      L.appendChild(q);
+    }
   }
   $("hint").textContent = S.mode === "drift" && !S.ropeLearned ? HINTS.driftFixed : HINTS[S.mode === "tower" ? S.variant : S.mode];
   invalidate(true);
@@ -327,6 +332,7 @@ function setQuery(q) { S.query = q; buildLegend(); }
 // Play walks the query up through every block; any manual navigation stops it.
 function togglePlay() {
   if (S.playing) { S.playing = false; buildLegend(); return; }
+  S.trace = false;
   S.playing = true;
   S.playT = 0;
   if (S.block === S.cfg.layers - 1) setBlock(0);
@@ -334,7 +340,22 @@ function togglePlay() {
 }
 function userBlock(b) {
   if (S.playing) { S.playing = false; buildLegend(); }
+  endTrace();
   setBlock(b);
+}
+// Follow a token at depth k back down through every block to the image.
+function startTrace(k, t) {
+  if (S.playing) S.playing = false;
+  S.trace = true;
+  S.traceK = k;
+  S.query = t;
+  setBlock(k - 2);
+  buildLegend();
+}
+function endTrace() {
+  if (!S.trace) return;
+  S.trace = false;
+  buildLegend();
 }
 function setBlock(b) {
   b = clamp(b, 0, S.cfg.layers - 1);
@@ -350,7 +371,7 @@ $("modes").onclick = (e) => { const b = e.target.closest("button"); if (b) setMo
 
 addEventListener("keydown", (e) => {
   if (e.target.tagName === "INPUT" || !S.cfg) return;
-  if (e.key === "Escape") setQuery(0);
+  if (e.key === "Escape") S.trace ? endTrace() : setQuery(0);
   else if (e.key === "0") setHead(-1);
   else if (e.key >= "1" && e.key <= String(S.cfg.heads)) setHead(+e.key - 1);
   else if (e.key === "t") setMode("tower");
@@ -374,7 +395,7 @@ function updateReading(wide) {
   const el = $("reading");
   el.hidden = S.mode !== "tower" || !wide;
   if (el.hidden) return;
-  const key = [S.resultId, S.query, S.head, S.block, S.subSteps].join();
+  const key = [S.resultId, S.query, S.head, S.block, S.subSteps, S.trace, S.traceK].join();
   if (key === readingKey) return;
   readingKey = key;
   el.innerHTML = readingHtml(S);
@@ -709,7 +730,7 @@ function showTooltip(html) {
   let right = $("stageWrap").clientWidth;
   const card = $("reading");
   if (!card.hidden) right = Math.min(right, card.getBoundingClientRect().left - $("stageWrap").getBoundingClientRect().left);
-  const x = S.pointer[0] + w + 30 > right ? S.pointer[0] - w - 28 : S.pointer[0];
+  const x = Math.max(8, S.pointer[0] + w + 30 > right ? S.pointer[0] - w - 28 : S.pointer[0]);
   tooltip.style.left = `${x}px`;
   tooltip.style.top = `${S.pointer[1]}px`;
 }
@@ -758,8 +779,9 @@ function handleClick() {
   const h = S.hover;
   if (S.mode === "tower") {
     // A token becomes the query, and the block that produced its depth becomes active.
-    if (!h) return;
+    if (!h) return endTrace();
     if (h.kind === "ghost") return userBlock(Math.max(0, h.k - 2));
+    if (h.k >= 2 && !h.mid) return startTrace(h.k, h.t);
     if (h.k >= 1) userBlock(Math.max(0, h.k - 2));
     setQuery(h.t);
   } else if (S.mode === "atlas") {
@@ -772,15 +794,17 @@ function handleClick() {
 function drawOverlay(ctx, W, H) {
   if (!S.showRollout) return;
   const { grid, nTokens: T } = S.cfg;
-  const R = S.result.rollout;
+  // While tracing, show the traced token's own lineage; otherwise full rollout from the top.
+  const traced = S.mode === "tower" && S.trace ? traceInfluence(S)[1] : null;
+  const R = traced || S.result.rollout.subarray(S.query * T, S.query * T + T);
   let max = 1e-6;
-  for (let p = 1; p < T; p++) max = Math.max(max, R[S.query * T + p]);
+  for (let p = 1; p < T; p++) max = Math.max(max, R[p]);
   const t = W / grid;
   ctx.fillStyle = "rgba(10,10,15,0.35)";
   ctx.fillRect(0, 0, W, H);
   ctx.globalCompositeOperation = "lighter";
   for (let p = 0; p < grid * grid; p++) {
-    const v = R[S.query * T + p + 1] / max;
+    const v = R[p + 1] / max;
     ctx.fillStyle = rgba(GOLD, 0.55 * v ** 1.5);
     ctx.fillRect((p % grid) * t, Math.floor(p / grid) * t, t, t);
   }
@@ -818,6 +842,9 @@ function frameLoop(now) {
   // Ease the scrub accordion toward the active block.
   if (Math.abs(S.blockF - S.block) > 0.002) { S.blockF += (S.block - S.blockF) * Math.min(1, dt * 9); dirty = true; }
   else S.blockF = S.block;
+  const traceTo = S.trace ? 1 : 0;
+  if (Math.abs(S.traceF - traceTo) > 0.002) { S.traceF += (traceTo - S.traceF) * Math.min(1, dt * 7); dirty = true; }
+  else S.traceF = traceTo;
   if (S.mode === "drift" && S.driftPin < 0) dirty = true;
 
   if (dirty) {

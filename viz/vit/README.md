@@ -7,7 +7,9 @@ and watch attention and the residual stream change live.
 - **Tower** — one plate per depth (pixels → embedding → block 1…6), folded like an accordion so
   only the active block's input and output plates are open. Tiles are colored by a fixed per-depth
   PCA of the residual stream; threads are the block's strongest attention into the query token
-  (CLS by default, click any tile to follow a patch), and a dotted line is its residual path.
+  (CLS by default), and a dotted line is its residual path. Clicking a tile on a block's output
+  **traces** it: the accordion unfolds down to the pixels and a tree of attention rollout (heads
+  averaged, residual counted, MLPs ignored) shows which image patches shaped that token.
   Scroll or ↑/↓ to move through depth; a card lists the top sources in words. Optional controls:
   **play** (space) walks the query up through every block; **attention → MLP** opens each block
   into its state between the two, with one stroke per token for how far the MLP moves it; and
