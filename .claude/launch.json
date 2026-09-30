@@ -4,8 +4,11 @@
     {
       "name": "vit-viz",
       "runtimeExecutable": "python3",
-      "runtimeArgs": ["viz/vit/serve.py"],
-      "port": 8765
+      "runtimeArgs": [
+        "viz/vit/serve.py"
+      ],
+      "port": 8765,
+      "autoPort": true
     }
   ]
 }

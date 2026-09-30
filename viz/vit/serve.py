@@ -1,6 +1,7 @@
 """Serve the visualizer with caching disabled, so edits show up on a plain reload."""
 
 import argparse
+import os
 from functools import partial
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -14,7 +15,7 @@ class NoCacheHandler(SimpleHTTPRequestHandler):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--port", type=int, default=8765)
+    parser.add_argument("--port", type=int, default=int(os.environ.get("PORT", 8765)))
     args = parser.parse_args()
     handler = partial(NoCacheHandler, directory=str(Path(__file__).parent / "web"))
     print(f"Lumen on http://localhost:{args.port}")
