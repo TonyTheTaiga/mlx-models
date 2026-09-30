@@ -5,7 +5,7 @@ Writes to viz/vit/web/assets/:
   weights.bin / weights.json  raw float32 tensors + {name: [offset, shape]} manifest
   samples.bin / samples.json  uint8 test images (N, 32, 32, 3) + labels and class names
   pca.json                    per-depth PCA basis of the residual stream (for false color)
-  reference.json              MLX logits for a few samples, used by the page's self-check
+  reference.json              MLX logits for one sample per class, used by the page's self-check
 
 Usage: uv run python viz/vit/export.py [--checkpoint training/vit/checkpoints/cifar10]
 """
@@ -126,12 +126,13 @@ def main():
     with open(OUT / "pca.json", "w") as f:
         json.dump(pca, f)
 
-    # Reference outputs for the browser self-check.
-    ref = mx.array(images[:8].astype(np.float32) / 255.0)
+    # Reference outputs for the browser self-check: the first gallery image of every class.
+    indices = [int(np.flatnonzero(labels == c)[0]) for c in np.unique(labels)]
+    ref = mx.array(images[indices].astype(np.float32) / 255.0)
     states, logits = residual_states(model, ref)
     assert mx.allclose(logits, model(ref), atol=1e-4).item()
     with open(OUT / "reference.json", "w") as f:
-        json.dump({"indices": list(range(8)), "logits": np.array(logits).tolist()}, f)
+        json.dump({"indices": indices, "logits": np.array(logits).tolist()}, f)
 
     acc = (np.array(mx.argmax(model(mx.array(images.astype(np.float32) / 255.0)), -1)) == labels)
     print(f"Exported {len(manifest)} tensors ({offset * 4 / 1e6:.1f} MB), {len(labels)} samples")

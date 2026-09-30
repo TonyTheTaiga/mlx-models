@@ -138,7 +138,7 @@ function drawScrub(ctx, W, H, S) {
       const [a, b] = raw(x, y, z);
       x0 = Math.min(x0, a); x1 = Math.max(x1, a); y0 = Math.min(y0, b); y1 = Math.max(y1, b);
     }
-  const scale = Math.min((W - Math.min(260, W * 0.3)) / (x1 - x0), (H - 150) / (y1 - y0));
+  const scale = Math.min((W - Math.min(260, W * 0.38)) / (x1 - x0), (H - 150) / (y1 - y0));
   const ox = W / 2 - Math.min(40, W * 0.08) - (scale * (x0 + x1)) / 2, oy = H / 2 + 22 - (scale * (y0 + y1)) / 2;
   const P = (x, y, z) => { const [a, b] = raw(x, y, z); return [ox + a * scale, oy + b * scale]; };
   const tileXZ = (p) => [((p % grid) + 0.5) / grid - 0.5, 0.5 - (Math.floor(p / grid) + 0.5) / grid];
@@ -195,7 +195,7 @@ function drawScrub(ctx, W, H, S) {
       orbs.push([k, x, yy, r + 6, o]);
     }
     const lx = P(0.5, y, 0.5);
-    label(ctx, depthName(k), lx[0] + 18, lx[1], { active: o > 0.5, big: Math.round(src) + 1 === k });
+    label(ctx, depthName(k), lx[0] + 18, lx[1], { active: o > 0.5, big: W >= 500 && Math.round(src) + 1 === k });
   }
 
   // Attention and the residual path for the active block, fading in after a scrub.
@@ -215,9 +215,10 @@ function drawScrub(ctx, W, H, S) {
     }
     const mid = P(0.5, (ys[b + 1] + ys[b + 2]) / 2, 0.5);
     ctx.font = MONO; ctx.textAlign = "left"; ctx.fillStyle = rgba(GOLD, 0.8);
-    ctx.fillText(`↑ attention into ${tokenName(S.cfg, S.query)}`, mid[0] + 18, mid[1] - 7);
+    const narrow = W < 500;
+    ctx.fillText(narrow ? "↑ attention" : `↑ attention into ${tokenName(S.cfg, S.query)}`, mid[0] + 18, mid[1] - 7);
     ctx.fillStyle = rgba(MUTED, 0.9);
-    ctx.fillText("┆ residual path", mid[0] + 18, mid[1] + 8);
+    ctx.fillText(narrow ? "┆ residual" : "┆ residual path", mid[0] + 18, mid[1] + 8);
     ctx.globalAlpha = 1;
   }
 
@@ -439,7 +440,7 @@ function drawStack(ctx, W, H, S) {
       const [a, b] = raw(x, plateY(k), z);
       x0 = Math.min(x0, a); x1 = Math.max(x1, a); y0 = Math.min(y0, b); y1 = Math.max(y1, b);
     }
-  const scale = Math.min((W - Math.min(220, W * 0.3)) / (x1 - x0), (H - 180) / (y1 - y0));
+  const scale = Math.min((W - Math.min(220, W * 0.36)) / (x1 - x0), (H - 180) / (y1 - y0));
   const ox = W / 2 - Math.min(30, W * 0.08) - (scale * (x0 + x1)) / 2, oy = H / 2 + 34 - (scale * (y0 + y1)) / 2;
   const P = (x, y, z) => { const [a, b] = raw(x, y, z); return [ox + a * scale, oy + b * scale]; };
   const tileXZ = (p) => [((p % grid) + 0.5) / grid - 0.5, 0.5 - (Math.floor(p / grid) + 0.5) / grid];

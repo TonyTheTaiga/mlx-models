@@ -38,6 +38,11 @@ worker.onmessage = ({ data }) => {
   if (data.type === "ready") {
     S.cfg = data.cfg; S.classes = data.classes; S.rope = data.rope;
     S.block = S.blockF = data.cfg.layers - 1;
+    // Checkpoints trained after the Rope2D fix carry the untouched grid and frequencies.
+    const g = data.cfg.grid, nf = data.rope[0].freq.length;
+    S.ropeLearned = data.rope.some((L) =>
+      L.posIdx.some((v, i) => Math.abs(v - (i % 2 ? Math.floor(i / 2) % g : Math.floor(i / 2 / g))) > 1e-4) ||
+      L.freq.some((f, j) => Math.abs(f / Math.pow(100, -j / nf) - 1) > 1e-4));
     const c = S.cfg;
     $("meta").textContent = `ViT · ${c.layers} blocks · ${c.heads} heads · d=${c.dModel} · ${c.grid}×${c.grid} patches of ${c.win}px · 2D RoPE · CIFAR-10`;
     boot();
@@ -265,6 +270,7 @@ const HINTS = {
   stack: "The whole stack in 3D. Drag to orbit, scroll or ↑↓ to change the active block, click a tile to follow it.",
   atlas: "Rows are blocks, columns are heads: where the query looks at each step. Last column is the residual stream itself. Click a patch to make it the query.",
   drift: "RoPE positions were left trainable, so each block learned its own map of where the patches sit. The image is re-assembled at those learned coordinates.",
+  driftFixed: "This checkpoint's RoPE positions and frequencies are fixed, so every block uses the same grid — there is no drift to show.",
 };
 const tokenName = (t) => nameOf(S.cfg, t);
 
@@ -301,7 +307,7 @@ function buildLegend() {
     q.innerHTML = `query <b>${tokenName(S.query)}</b>`;
     L.appendChild(q);
   }
-  $("hint").textContent = HINTS[S.mode === "tower" ? S.variant : S.mode];
+  $("hint").textContent = S.mode === "drift" && !S.ropeLearned ? HINTS.driftFixed : HINTS[S.mode === "tower" ? S.variant : S.mode];
   invalidate(true);
 }
 function setHead(h) { S.head = h; buildLegend(); }
@@ -534,7 +540,9 @@ function drawDrift(ctx, W, H) {
   ctx.fillText(`block ${shown + 1}`, ox, oy - 18);
   ctx.fillStyle = "rgba(139,134,118,0.9)";
   ctx.font = "10px 'JetBrains Mono', monospace";
-  ctx.fillText("where this block's RoPE believes each patch sits · dots = the lattice it started from", ox, oy - 4);
+  ctx.fillText(S.ropeLearned
+    ? "where this block's RoPE believes each patch sits · dots = the lattice it started from"
+    : "fixed RoPE: positions sit exactly on the lattice in every block", ox, oy - 4);
 
   // Learned rotary frequencies vs. the 100^(-j/n) they were initialized to.
   const fx = ox + size + 50, fy = oy + size - fh;
@@ -672,8 +680,11 @@ function showTooltip(html) {
   tooltip.hidden = false;
   if (tooltip.innerHTML !== html) tooltip.innerHTML = html;
   const w = tooltip.offsetWidth;
-  const stageW = $("stageWrap").clientWidth;
-  const x = S.pointer[0] + w + 30 > stageW ? S.pointer[0] - w - 28 : S.pointer[0];
+  // Flip to the left of the pointer before running into the stage edge or the reading card.
+  let right = $("stageWrap").clientWidth;
+  const card = $("reading");
+  if (!card.hidden) right = Math.min(right, card.getBoundingClientRect().left - $("stageWrap").getBoundingClientRect().left);
+  const x = S.pointer[0] + w + 30 > right ? S.pointer[0] - w - 28 : S.pointer[0];
   tooltip.style.left = `${x}px`;
   tooltip.style.top = `${S.pointer[1]}px`;
 }
