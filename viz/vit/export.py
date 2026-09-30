@@ -84,7 +84,15 @@ def main():
             f.write(value.tobytes())
             offset += value.size
     with open(OUT / "weights.json", "w") as f:
-        json.dump({"config": config, "classes": class_names, "tensors": manifest, "fingerprint": fingerprint(ckpt / args.weights)}, f)
+        json.dump(
+            {
+                "config": config,
+                "classes": class_names,
+                "tensors": manifest,
+                "fingerprint": fingerprint(ckpt / args.weights),
+            },
+            f,
+        )
 
     # Gallery samples, with MLX's prediction for each so the gallery can mark mistakes.
     images, labels = load_split(data_root / "test", args.samples_per_class, seed=0)

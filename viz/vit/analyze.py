@@ -168,10 +168,18 @@ def flatten_where(images, mask):
 def shuffle_patches(images, grid, win, seed=0):
     rng = np.random.default_rng(seed)
     n = len(images)
-    p = images.reshape(n, grid, win, grid, win, 3).transpose(0, 1, 3, 2, 4, 5).reshape(n, grid * grid, win, win, 3)
+    p = (
+        images.reshape(n, grid, win, grid, win, 3)
+        .transpose(0, 1, 3, 2, 4, 5)
+        .reshape(n, grid * grid, win, win, 3)
+    )
     for i in range(n):
         p[i] = p[i][rng.permutation(grid * grid)]
-    return p.reshape(n, grid, grid, win, win, 3).transpose(0, 1, 3, 2, 4, 5).reshape(n, grid * win, grid * win, 3)
+    return (
+        p.reshape(n, grid, grid, win, win, 3)
+        .transpose(0, 1, 3, 2, 4, 5)
+        .reshape(n, grid * win, grid * win, 3)
+    )
 
 
 # ---------- occlusion evidence ----------
@@ -223,8 +231,12 @@ def collect_features(probe, images, bs=500):
         _, cls_states, patch_means, _ = probe(to_input(images[sl]))
         c = [np.array(s) for s in cls_states]
         p = [np.array(s) for s in patch_means]
-        cls_feats = c if cls_feats is None else [np.concatenate([a, b]) for a, b in zip(cls_feats, c)]
-        patch_feats = p if patch_feats is None else [np.concatenate([a, b]) for a, b in zip(patch_feats, p)]
+        cls_feats = (
+            c if cls_feats is None else [np.concatenate([a, b]) for a, b in zip(cls_feats, c)]
+        )
+        patch_feats = (
+            p if patch_feats is None else [np.concatenate([a, b]) for a, b in zip(patch_feats, p)]
+        )
     return cls_feats, patch_feats
 
 
@@ -246,7 +258,9 @@ def main():
     nc, win = len(classes), mcfg["win_size"]
     grid = dcfg["image_size"] // win
 
-    model = Classifier(num_classes=nc, image_size=dcfg["image_size"], channels=dcfg["channels"], **mcfg)
+    model = Classifier(
+        num_classes=nc, image_size=dcfg["image_size"], channels=dcfg["channels"], **mcfg
+    )
     load_checkpoint(model, ckpt / args.weights, learned_rope=True)
     model.eval()
     probe = Probe(model)
@@ -256,7 +270,9 @@ def main():
 
     # The instrumented pass must reproduce the model exactly.
     check = to_input(test_x[:64])
-    assert mx.allclose(probe(check)[0], model(check), atol=1e-4).item(), "instrumented forward diverges"
+    assert mx.allclose(probe(check)[0], model(check), atol=1e-4).item(), (
+        "instrumented forward diverges"
+    )
 
     # ----- accuracy and counterfactual tests -----
     base_pred = predict(probe, test_x, test_y)
@@ -266,7 +282,10 @@ def main():
         "config": mcfg,
         "classes": classes,
         "n_test": int(len(test_x)),
-        "accuracy": {"overall": float((base_pred == test_y).mean()), "per_class": per_class_acc(base_pred, test_y, nc)},
+        "accuracy": {
+            "overall": float((base_pred == test_y).mean()),
+            "per_class": per_class_acc(base_pred, test_y, nc),
+        },
     }
     result["accuracy"]["false_alarm"] = false_alarms(base_pred, test_y, nc)
     conf = np.zeros((nc, nc), int)
@@ -275,11 +294,32 @@ def main():
     log(f"accuracy {result['accuracy']['overall']:.1%}")
 
     tests = {
-        "border_only": ("Border only", "the center 6×6 patches flattened to the image's mean color; only the outer ring of patches is left", flatten_where(test_x, ring_mask(grid, win, border=False))),
-        "center_only": ("Center only", "the outer ring of patches flattened; only the center 6×6 is left", flatten_where(test_x, ring_mask(grid, win, border=True))),
-        "grayscale": ("Grayscale", "color removed (channel mean)", np.repeat(test_x.mean(-1, keepdims=True).round().astype(np.uint8), 3, -1)),
-        "shuffled": ("Patches shuffled", "the 64 patches randomly rearranged: local texture kept, global shape destroyed", shuffle_patches(test_x, grid, win)),
-        "mirrored": ("Mirrored", "flipped left–right; should cost almost nothing", test_x[:, :, ::-1].copy()),
+        "border_only": (
+            "Border only",
+            "the center 6×6 patches flattened to the image's mean color; "
+            "only the outer ring of patches is left",
+            flatten_where(test_x, ring_mask(grid, win, border=False)),
+        ),
+        "center_only": (
+            "Center only",
+            "the outer ring of patches flattened; only the center 6×6 is left",
+            flatten_where(test_x, ring_mask(grid, win, border=True)),
+        ),
+        "grayscale": (
+            "Grayscale",
+            "color removed (channel mean)",
+            np.repeat(test_x.mean(-1, keepdims=True).round().astype(np.uint8), 3, -1),
+        ),
+        "shuffled": (
+            "Patches shuffled",
+            "the 64 patches randomly rearranged: local texture kept, global shape destroyed",
+            shuffle_patches(test_x, grid, win),
+        ),
+        "mirrored": (
+            "Mirrored",
+            "flipped left–right; should cost almost nothing",
+            test_x[:, :, ::-1].copy(),
+        ),
     }
     result["tests"] = {}
     for key, (name, desc, imgs) in tests.items():
@@ -294,7 +334,9 @@ def main():
         log(f"test {key}: {result['tests'][key]['overall']:.1%}")
 
     # ----- occlusion evidence per class -----
-    sel = np.concatenate([np.flatnonzero(test_y == c)[: args.evidence_per_class] for c in range(nc)])
+    sel = np.concatenate(
+        [np.flatnonzero(test_y == c)[: args.evidence_per_class] for c in range(nc)]
+    )
     scores, preds = occlusion_scores(probe, test_x[sel], grid, win)
     labels = test_y[sel]
     border = ring_mask(grid, 1, border=True).reshape(-1)  # patch-level ring
@@ -306,15 +348,20 @@ def main():
     for c in range(nc):
         m = (labels == c) & correct
         mw = (labels == c) & ~correct
-        ev["per_class"].append({
-            "n_correct": int(m.sum()),
-            "map": share[m].mean(0).tolist() if m.any() else [0.0] * grid * grid,
-            "border_share": float(border_share[m].mean()) if m.any() else None,
-            "border_share_wrong": float(border_share[mw].mean()) if mw.any() else None,
-        })
+        ev["per_class"].append(
+            {
+                "n_correct": int(m.sum()),
+                "map": share[m].mean(0).tolist() if m.any() else [0.0] * grid * grid,
+                "border_share": float(border_share[m].mean()) if m.any() else None,
+                "border_share_wrong": float(border_share[mw].mean()) if mw.any() else None,
+            }
+        )
     ev["border_share_overall"] = float(border_share[correct].mean())
     result["evidence"] = ev
-    log(f"occlusion evidence on {len(sel)} images; border share {ev['border_share_overall']:.1%} (uniform {ev['border_baseline']:.1%})")
+    log(
+        f"occlusion evidence on {len(sel)} images; border share "
+        f"{ev['border_share_overall']:.1%} (uniform {ev['border_baseline']:.1%})"
+    )
 
     # Drill-down examples: per class, the most border-reliant correct images (and one centered).
     examples, ex_imgs = [], []
@@ -324,7 +371,15 @@ def main():
             continue
         order = idx[np.argsort(-border_share[idx])]
         for kind, j in [("border", order[0]), ("border", order[1]), ("center", order[-1])]:
-            examples.append({"slot": len(ex_imgs), "label": int(c), "pred": int(preds[j]), "border_share": float(border_share[j]), "kind": kind})
+            examples.append(
+                {
+                    "slot": len(ex_imgs),
+                    "label": int(c),
+                    "pred": int(preds[j]),
+                    "border_share": float(border_share[j]),
+                    "kind": kind,
+                }
+            )
             ex_imgs.append(test_x[sel[j]])
     np.stack(ex_imgs).astype(np.uint8).tofile(OUT / "examples.bin")
     result["examples"] = examples
@@ -340,7 +395,12 @@ def main():
     probe_cls = [fit_probe(a, train_y, b, test_y, nc) for a, b in zip(tr_cls, te_cls)]
     probe_patch = [fit_probe(a, train_y, b, test_y, nc) for a, b in zip(tr_patch, te_patch)]
     depths = ["embed"] + [f"block {i + 1}" for i in range(len(probe.blocks))]
-    result["readout"] = {"depths": depths, "head_on_cls": lens, "probe_cls": probe_cls, "probe_patch_mean": probe_patch}
+    result["readout"] = {
+        "depths": depths,
+        "head_on_cls": lens,
+        "probe_cls": probe_cls,
+        "probe_patch_mean": probe_patch,
+    }
     log(f"read-out probe on CLS: {' '.join(f'{a:.0%}' for a in probe_cls)}")
 
     # ----- internals: knock-outs -----
@@ -355,27 +415,38 @@ def main():
     agg = None
     for sl in batches(len(test_x), 500):
         stats = probe(to_input(test_x[sl]), collect=True)[3]
-        stats = [{k: (np.array(v) if isinstance(v, mx.array) else v) for k, v in s.items()} for s in stats]
+        stats = [
+            {k: (np.array(v) if isinstance(v, mx.array) else v) for k, v in s.items()}
+            for s in stats
+        ]
         agg = stats if agg is None else [{k: a[k] + b[k] for k in a} for a, b in zip(agg, stats)]
     heads, residual = [], []
     for i, s in enumerate(agg):
         for h in range(len(s["entropy"])):
             acc = float((predict(probe, test_x, test_y, zero_head=(i, h)) == test_y).mean())
-            heads.append({
-                "block": i + 1, "head": h + 1,
-                "entropy": float(s["entropy"][h] / s["count_q"]),
-                "reach": float(s["reach"][h] / s["count_p"]),
-                "to_cls": float(s["to_cls"][h] / s["count_p"]),
-                "cls_self": float(s["cls_self"][h] / s["count_b"]),
-                "knockout_delta": acc - base_acc,
-            })
-        residual.append({
-            "block": i + 1,
-            "input_norm": float(s["x_norm"] / s["tokens"]),
-            "attn_update": float(s["attn_norm"] / s["x_norm"]),
-            "mlp_update": float(s["mlp_norm"] / s["mid_norm"]),
-        })
-        log(f"block {i + 1}: head knock-outs " + " ".join(f"{hh['knockout_delta']:+.1%}" for hh in heads[-len(s['entropy']):]))
+            heads.append(
+                {
+                    "block": i + 1,
+                    "head": h + 1,
+                    "entropy": float(s["entropy"][h] / s["count_q"]),
+                    "reach": float(s["reach"][h] / s["count_p"]),
+                    "to_cls": float(s["to_cls"][h] / s["count_p"]),
+                    "cls_self": float(s["cls_self"][h] / s["count_b"]),
+                    "knockout_delta": acc - base_acc,
+                }
+            )
+        residual.append(
+            {
+                "block": i + 1,
+                "input_norm": float(s["x_norm"] / s["tokens"]),
+                "attn_update": float(s["attn_norm"] / s["x_norm"]),
+                "mlp_update": float(s["mlp_norm"] / s["mid_norm"]),
+            }
+        )
+        log(
+            f"block {i + 1}: head knock-outs "
+            + " ".join(f"{hh['knockout_delta']:+.1%}" for hh in heads[-len(s["entropy"]) :])
+        )
     result["heads"] = heads
     result["residual"] = residual
 
