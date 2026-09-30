@@ -25,6 +25,13 @@ ROOT = Path(__file__).parents[2]
 OUT = Path(__file__).parent / "web" / "assets"
 
 
+def fingerprint(path: Path) -> str:
+    """Short content hash of a checkpoint, so the page can tell if its files disagree."""
+    import hashlib
+
+    return hashlib.sha256(path.read_bytes()).hexdigest()[:12]
+
+
 def load_split(split_dir: Path, per_class: int, seed: int) -> tuple[np.ndarray, np.ndarray]:
     rng = np.random.default_rng(seed)
     images, labels = [], []
@@ -77,7 +84,7 @@ def main():
             f.write(value.tobytes())
             offset += value.size
     with open(OUT / "weights.json", "w") as f:
-        json.dump({"config": config, "classes": class_names, "tensors": manifest}, f)
+        json.dump({"config": config, "classes": class_names, "tensors": manifest, "fingerprint": fingerprint(ckpt / args.weights)}, f)
 
     # Gallery samples, with MLX's prediction for each so the gallery can mark mistakes.
     images, labels = load_split(data_root / "test", args.samples_per_class, seed=0)

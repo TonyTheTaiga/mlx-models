@@ -1,12 +1,13 @@
-// Lumen — which patches did the model lean on for its final prediction?
+// Lumen — what is your ViT actually using?
 //
-// The model runs in the browser (worker.js, a JS port of the MLX ViT). For the current image a
-// pool of workers hides each patch in turn and records the prediction (the occlusion sweep), then
-// checks the resulting ranking by keeping or removing the top-k patches (the curves). The
-// scoring, drawing and wording live in evidence.js.
+// Shortcuts and Internals render the dataset-level analysis from analyze.py (report.js).
+// Inspect is the per-image drill-down: the model runs in the browser (worker.js, a JS port of the
+// MLX ViT), a pool of workers hides each patch in turn and records the prediction (the occlusion
+// sweep), then checks the ranking by keeping or removing the top-k patches (evidence.js).
 
 import { $, clamp, rgba, fit, CLASS_COLORS } from "./util.js";
 import { evidence, curvePoints, currentK, predicted, drawFigure, drawChart, answerHtml, tooltipHtml } from "./evidence.js";
+import { renderShortcuts, renderInternals } from "./report.js";
 
 // ---------- state ----------
 const S = {
@@ -14,6 +15,7 @@ const S = {
   samples: null, labels: [], preds: [], sampleIndex: 0, source: null, label: null,
   edited: false, // pixels differ from the source image, so its label may no longer apply
   mistakesOnly: false,
+  view: "shortcuts", analysis: null, examples: null,
   pixels: new Uint8ClampedArray(32 * 32 * 3),
   result: null, resultId: 0,
   occ: null, occWant: 0, curves: null, curvesWant: 0, curvesKey: "",
@@ -117,16 +119,29 @@ pool.forEach((w, i) => {
 });
 
 async function boot() {
-  const [meta, buf, ref] = await Promise.all([
+  const [meta, buf, ref, analysis, examples] = await Promise.all([
     fetch("assets/samples.json").then((r) => r.json()),
     fetch("assets/samples.bin").then((r) => r.arrayBuffer()),
     fetch("assets/reference.json").then((r) => r.json()),
+    // Optional: written by analyze.py.
+    fetch("assets/analysis.json").then((r) => (r.ok ? r.json() : null)).catch(() => null),
+    fetch("assets/examples.bin").then((r) => (r.ok ? r.arrayBuffer() : null)).catch(() => null),
   ]);
+  S.analysis = analysis;
+  // The report and the browser model must describe the same checkpoint.
+  if (analysis && analysis.fingerprint !== S.cfg.fingerprint) {
+    const warn = document.createElement("p");
+    warn.className = "stale";
+    warn.textContent = "⚠ The analysis and the in-browser model come from different checkpoints. Re-run export.py and analyze.py.";
+    document.querySelector(".stage").prepend(warn);
+  }
+  S.examples = examples && new Uint8Array(examples);
   S.samples = new Uint8Array(buf);
   S.labels = meta.labels;
   S.preds = meta.preds ?? [];
   buildGallery();
-  selectSample(Math.floor(Math.random() * meta.count));
+  selectSample(Math.floor(Math.random() * meta.count), false);
+  renderView();
   worker.postMessage({
     type: "check",
     images: ref.indices.map((i) => S.samples.slice(i * 3072, (i + 1) * 3072)),
@@ -147,11 +162,57 @@ function setPixels(px, label = null) {
   S.ev.cls = null;
   pixelsChanged(false);
 }
-function selectSample(i) {
+function selectSample(i, open = true) {
   S.sampleIndex = i;
   setPixels(S.samples.subarray(i * 3072, (i + 1) * 3072), S.labels[i]);
   document.querySelectorAll(".gallery .thumb").forEach((c, k) => c.classList.toggle("on", k === i));
+  if (open) setView("inspect"); // picking an image means you want to look at it
 }
+
+// ---------- views ----------
+function setView(v) {
+  if (S.view === v) return;
+  S.view = v;
+  renderView();
+}
+const reportApi = {
+  paintExample(canvas, slot) {
+    const ctx = canvas.getContext("2d"), img = ctx.createImageData(32, 32);
+    for (let p = 0; p < 1024; p++) {
+      for (let k = 0; k < 3; k++) img.data[p * 4 + k] = S.examples[slot * 3072 + p * 3 + k];
+      img.data[p * 4 + 3] = 255;
+    }
+    ctx.putImageData(img, 0, 0);
+  },
+  inspectExample(slot, label) {
+    document.querySelectorAll(".gallery .thumb.on").forEach((x) => x.classList.remove("on"));
+    setPixels(S.examples.subarray(slot * 3072, (slot + 1) * 3072), label);
+    setView("inspect");
+  },
+};
+const rendered = {};
+function renderView() {
+  document.querySelectorAll("#tabs button").forEach((b) => {
+    const on = b.dataset.view === S.view;
+    b.classList.toggle("on", on);
+    b.setAttribute("aria-selected", on);
+  });
+  for (const v of ["shortcuts", "internals", "inspect"]) $(`view-${v}`).hidden = v !== S.view;
+  if (S.view === "inspect") { invalidate(); return; }
+  const root = $(`view-${S.view}`);
+  if (!S.analysis) {
+    root.replaceChildren();
+    root.insertAdjacentHTML("beforeend", `<p class="report-empty">No analysis yet. Run <code>uv run python viz/vit/analyze.py</code> (about 2–3 minutes), then reload.</p>`);
+    return;
+  }
+  const width = root.clientWidth;
+  if (rendered[S.view] === width) return; // charts are sized to the view; redraw only on resize
+  rendered[S.view] = width;
+  (S.view === "shortcuts" ? renderShortcuts : renderInternals)(root, S.analysis, reportApi);
+}
+$("tabs").onclick = (e) => { const b = e.target.closest("button[data-view]"); if (b) setView(b.dataset.view); };
+let resizeTimer = 0;
+new ResizeObserver(() => { clearTimeout(resizeTimer); resizeTimer = setTimeout(() => S.view !== "inspect" && renderView(), 150); }).observe($("view-shortcuts").parentElement);
 
 // Thumbnails marked by whether the model gets them right (predictions exported from MLX).
 function buildGallery() {
@@ -358,7 +419,7 @@ addEventListener("keydown", (e) => {
   if (e.target.tagName === "INPUT" || !S.cfg) return;
   if (e.key === "Escape") setPaintMode(false);
   else if (e.key === "p") setPaintMode(!S.paintMode);
-  else if (e.key === "ArrowRight" || e.key === "ArrowLeft") {
+  else if ((e.key === "ArrowRight" || e.key === "ArrowLeft") && S.view === "inspect") {
     const n = S.labels.length;
     selectSample((S.sampleIndex + (e.key === "ArrowRight" ? 1 : n - 1)) % n);
   }

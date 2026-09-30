@@ -39,6 +39,7 @@ export async function loadModel(base = "assets") {
       posIdx: t[p + "roper.pos_idx"],
     });
   }
+  cfg.fingerprint = manifest.fingerprint ?? null;
   return new Vit(cfg, {
     embed: t["vit.proj.weight"],
     cls: t["class_token.weight"],

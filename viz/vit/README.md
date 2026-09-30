@@ -1,38 +1,37 @@
-# Lumen — which patches did the model lean on?
+# Lumen — what is your ViT actually using?
 
-An in-browser, image-first answer to one question about the CIFAR-10 ViT in
-`networks/transformers/vit/`: **which patches did the model lean on for its final prediction?**
-The model runs entirely in JavaScript (a Web Worker port of the MLX forward pass, checked against
-MLX on load), so you can paint straight onto the image (✎ paint, or pick a color), drop in your own picture,
-and watch the answer change.
+A model-builder's report on the CIFAR-10 ViT in `networks/transformers/vit/`, plus a per-image
+drill-down. The heavy lifting runs in MLX over the full test set (`analyze.py`); the page renders it.
 
-**Prediction vs. truth first.** A verdict card puts what the model said next to the image's
-CIFAR-10 label, marked ✓ right / ✗ wrong (or ✎ edited once you paint on it, and "no label" for
-your own images). On a mistake, one click shows the evidence for the true class. The gallery marks
-every image the model gets wrong (predictions exported from MLX), with a count and a
-"mistakes only" filter.
+**Shortcuts** — is it looking at the right thing?
+- Controlled tests on all 10,000 test images: *border only*, *center only*, *grayscale*,
+  *patches shuffled*, *mirrored*. Each class is scored by how much of its above-chance accuracy
+  survives (accuracy − how often other images get that label, relative to clean images), so a
+  class the model falls back on can't masquerade as robust. Flags: background shortcut, color
+  reliance, texture over shape.
+- Occlusion evidence per class: the average evidence map and the share on the border, with the
+  most border-reliant images one click from the drill-down.
 
-**How it answers.** Each of the 64 patches is hidden in turn — flattened to the image's average
-color — and scored by how much the log-probability of the predicted class drops (negative scores
-mean the patch argued *against* it). The ranking is then put to the test:
+**Internals** — is every part of the network earning its keep?
+- Where class information appears: linear probes on CLS and on the mean patch token after every
+  block, and the trained head applied early.
+- Knock-outs: accuracy with each block skipped, and with each head zeroed.
+- Per-head attention statistics (entropy, spatial reach, attention to CLS) and residual-stream
+  update sizes. Findings are written from the numbers at the top.
 
-- **keep only the top k** patches (the rest flattened): does the prediction survive?
-- **remove the top k**: does it collapse?
-
-The headline is the smallest k that keeps the answer at ≥80% of its confidence — "6 of 64 patches
-were enough". The large image shows exactly those patches, with the rest flattened; drag k to see
-more or fewer, click a patch to keep everything down to its rank, and toggle **signed map** to color
-every patch for and against. Pick a runner-up class to ask "why not a cat?": the page then shows
-how few of its best patches flip the answer to it (or, if none do, the strongest case they make).
-
-The sweeps (64 + 130 forward passes per image) run on a small worker pool, so they take a second
-or two and never block painting.
+**Inspect an image** — the drill-down. The model runs in the browser (a Web Worker port of the MLX
+forward pass, checked against MLX on load): each patch is hidden in turn and scored by the drop in
+the prediction's log-probability, then the ranking is tested by keeping or removing the top k.
+A verdict card sets the prediction against the true label; paint on the image (✎ paint), drop in
+your own, and watch the answer change.
 
 ## Run
 
 ```bash
-uv run python viz/vit/export.py            # writes viz/vit/web/assets/ from the checkpoint
+uv run python viz/vit/export.py     # browser model + gallery → viz/vit/web/assets/
+uv run python viz/vit/analyze.py    # full-test-set analysis (~3 min) → assets/analysis.json
 python3 viz/vit/serve.py
 ```
 
-Then open http://localhost:8765. Keys: `←`/`→` step through the gallery.
+Then open http://localhost:8765. Re-run both scripts after retraining; the page warns if they
+were produced from different checkpoints.
