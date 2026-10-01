@@ -8,6 +8,9 @@ const ROOMS = {
   enough: () => import("./rooms/enough.js"),
   lies: () => import("./rooms/lies.js"),
   field: () => import("./rooms/field.js"),
+  collage: () => import("./rooms/collage.js"),
+  tug: () => import("./rooms/tug.js"),
+  mirror: () => import("./rooms/mirror.js"),
 };
 const root = document.getElementById("room");
 let unmount = null;
@@ -66,6 +69,26 @@ async function landing(el) {
       stops.push(() => cancelAnimationFrame(raf));
     },
   };
+  previews.collage = async (c) => {
+    const pool = await loadImages("assets/pool.bin"), ctx = hiDPI(c, 240), cell = 30;
+    for (let t = 0; t < 64; t++) {
+      const img = Math.floor(Math.random() * 1000), p = Math.floor(Math.random() * 64), sr = Math.floor(p / 8) * 4, sc = (p % 8) * 4;
+      for (let i = 0; i < 4; i++) for (let j = 0; j < 4; j++) {
+        const o = img * 3072 + ((sr + i) * 32 + sc + j) * 3;
+        ctx.fillStyle = `rgb(${pool[o]},${pool[o + 1]},${pool[o + 2]})`;
+        ctx.fillRect((t % 8) * cell + 1 + j * 7, Math.floor(t / 8) * cell + 1 + i * 7, 7, 7);
+      }
+    }
+  };
+  previews.tug = (c) => {
+    const ctx = hiDPI(c, 240), g = randomGenome("engine");
+    g.blobs = []; g.ground = 0; g.strokes = g.strokes.slice(0, 6);
+    render(ctx, g, 240);
+  };
+  previews.mirror = (c) => {
+    const ctx = hiDPI(c, 240), it = enough.items[3];
+    drawImage(ctx, imageAt(enoughImgs, it.slot), 240);
+  };
   const stops = [];
   const entry = (key, num, title, text, after) => {
     const c = h("canvas", { "aria-hidden": "true" });
@@ -79,7 +102,7 @@ async function landing(el) {
   const c = m.cfg;
   el.append(
     h("section", { class: "hero" },
-      h("p", { class: "eyebrow" }, "An exhibition in four rooms"),
+      h("p", { class: "eyebrow" }, "An exhibition in seven rooms"),
       h("h1", {}, "GAZE"),
       h("p", { class: "lede" }, "Four studies in how a small machine sees — and what it doesn't need to see."),
       h("p", { class: "model" }, `A vision transformer · ${c.layers} blocks × ${c.heads} heads · trained on 32×32 photographs from CIFAR-10 · running live in your browser`)),
@@ -87,7 +110,10 @@ async function landing(el) {
       entry("engine", "I", "Perception Engine", "An evolutionary loop composes with eight inks and a handful of strokes until the model is certain it's looking at a ship — or a cat, or a frog. Intervene with your own strokes; print what it made.", "after Tom White, Perception Engines (2018), and Brown et al., Adversarial Patch (2017)"),
       entry("enough", "II", "Enough", `Test photographs reduced to only the patches the model needed. For correctly classified images the median is ${enough.median_enough_correct} of 64; for ${Math.round(enough.color_alone_share * 100)}%, the average color alone was enough.`, "after Anna Ridler, Myriad (Tulips) (2018)"),
       entry("lies", "III", "Plausible Lies", `Two maps claim to show where the model looked. One of them usually lies. Guess which — then a deletion test settles it. Over ${lies.pool} images, one method wins ${Math.round(lies.occlusion_wins * 100)}% of the time.`, "after Distill, Communicating with Interactive Articles (2020)"),
-      entry("field", "IV", "Hallucination Field", "A darkened room. Six images drift between the classes the model knows, each evolving toward whatever it is currently asked to see.", "after Trevor Paglen, Adversarially Evolved Hallucinations (2017–), and Refik Anadol, Machine Hallucinations (2016–)")),
+      entry("field", "IV", "Hallucination Field", "A darkened room. Six images drift between the classes the model knows, each evolving toward whatever it is currently asked to see.", "after Trevor Paglen, Adversarially Evolved Hallucinations (2017–), and Refik Anadol, Machine Hallucinations (2016–)"),
+      entry("collage", "V", "Collage", "The most convincing cat the model can find, assembled from 64,000 real fragments of other photographs — then purged, one by one, of every fragment that came from an actual cat.", "after the photomontages of Hannah Höch"),
+      entry("tug", "VI", "Tug of War", "You paint to make it see one thing. After every stroke, it paints one back, pulling toward another. Eight turns each; the canvas keeps the fight.", "after the exquisite corpse, and adversarial examples"),
+      entry("mirror", "VII", "Mirror", "Your camera, at the 32×32 resolution of everything the model has seen, named in the only ten words it knows. Nothing leaves your browser.", "after Memo Akten, Learning to See (2017)")),
     h("section", { class: "colophon" },
       h("div", {}, h("h3", {}, "The model"),
         h("p", {}, `A ${c.layers}-block, ${c.heads}-head vision transformer (d = ${c.dModel}, 2D rotary positions) trained in MLX on CIFAR-10's 32×32 photographs. The rooms that evolve images run it here, in your browser; the others were computed in MLX over 1,000 test images.`)),

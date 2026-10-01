@@ -1,10 +1,11 @@
 """
-Export the CIFAR-10 ViT and precomputed studies for GAZE, the four-room exhibition.
+Export the CIFAR-10 ViT and precomputed studies for GAZE, the exhibition.
 
 Writes to viz/gaze/web/assets/:
   weights.bin / weights.json   the browser model (rooms I and IV evolve images against it live)
   enough.json / enough.bin     room II: images reduced to the patches the prediction needed
   lies.json / lies.bin         room III: occlusion vs. Grad-CAM maps with their deletion curves
+  pool.json / pool.bin         room V's patch bank: the whole pool of test photographs + labels
 
 Everything is computed over a pool of test images (100 per class by default).
 
@@ -87,6 +88,9 @@ def main():
     pr = probs(model, images)
     preds, conf = pr.argmax(1), pr.max(1)
     log(f"pool of {len(images)} images, accuracy {(preds == labels).mean():.1%}")
+    images.astype(np.uint8).tofile(OUT / "pool.bin")
+    with open(OUT / "pool.json", "w") as f:
+        json.dump({"fingerprint": fp, "classes": classes, "labels": labels.tolist()}, f)
 
     # Occlusion ranking (drop in log p(pred) per patch) and keep/remove curves for every image.
     occ = occlusion(model, images, preds, grid, win)

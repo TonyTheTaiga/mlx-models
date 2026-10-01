@@ -22,6 +22,7 @@ export function word(n) {
 export const cap = (s) => s[0].toUpperCase() + s.slice(1);
 export const pct = (p, d = 0) => `${(p * 100).toFixed(d)}%`;
 export const article = (w) => (/^[aeiou]/.test(w) ? "an" : "a");
+export const plural = (w) => (w === "deer" ? "deer" : `${w}s`);
 
 export async function loadImages(url) {
   return new Uint8Array(await (await fetch(url)).arrayBuffer());
