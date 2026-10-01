@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import math
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Iterator, Sequence
@@ -13,6 +14,7 @@ import mlx.optimizers as optim
 import numpy as np
 import yaml
 
+from networks.autoencoders.super_resolution.discriminator import Discriminator
 from networks.autoencoders.super_resolution.model import SuperResolution
 from networks.utils.perceputal_loss import PerceptualLoss
 from networks.vgg16.model import VGG16
@@ -57,6 +59,7 @@ class SuperResolutionDataset:
         upscale: int,
         augment: bool = True,
         seed: int | None = None,
+        cache_images: bool = False,
     ):
         if hr_patch % upscale != 0:
             raise ValueError("hr_patch must be divisible by the upscale factor")
@@ -65,6 +68,8 @@ class SuperResolutionDataset:
         self.augment = augment
         self.paths = list_image_files(directory)
         self.rng = np.random.default_rng(seed)
+        # Decoding a 2K PNG per crop dominates step time; keep decoded images once seen.
+        self.cache: dict[int, np.ndarray] | None = {} if cache_images else None
 
     def __len__(self) -> int:
         return len(self.paths)
@@ -93,8 +98,15 @@ class SuperResolutionDataset:
         lr_patch = lr_patch.astype(np.float32) / 255.0
         return lr_patch, hr_patch
 
+    def _load(self, idx: int) -> np.ndarray:
+        if self.cache is None:
+            return read_image(self.paths[idx])
+        if idx not in self.cache:
+            self.cache[idx] = read_image(self.paths[idx])
+        return self.cache[idx]
+
     def __getitem__(self, idx: int) -> tuple[np.ndarray, np.ndarray]:
-        return self._create_pair(read_image(self.paths[idx]))
+        return self._create_pair(self._load(idx))
 
     def sample_batch(self, batch_size: int) -> tuple[np.ndarray, np.ndarray]:
         lr_batch = []
@@ -216,48 +228,115 @@ def compute_psnr(prediction: mx.array, target: mx.array, max_val: float = 1.0) -
     return float(20.0 * math.log10(max_val) - 10.0 * math.log10(mse))
 
 
+def load_validation_crops(
+    directory: Path, crop: int, upscale: int
+) -> tuple[np.ndarray, np.ndarray]:
+    """Fixed center crops of every validation image, degraded the same way as training."""
+    lr_crops, hr_crops = [], []
+    for path in list_image_files(directory):
+        image = read_image(path)
+        h, w = image.shape[:2]
+        size = min(crop, h, w) // upscale * upscale
+        y, x = (h - size) // 2, (w - size) // 2
+        hr = image[y : y + size, x : x + size]
+        lr = resize_image(hr, size // upscale, size // upscale, mode="area")
+        hr_crops.append(hr.astype(np.float32) / 255.0)
+        lr_crops.append(lr.astype(np.float32) / 255.0)
+    return np.stack(lr_crops), np.stack(hr_crops)
+
+
+def evaluate(
+    model: SuperResolution,
+    perceptual_loss: PerceptualLoss,
+    lr_crops: np.ndarray,
+    hr_crops: np.ndarray,
+    layers: Sequence[int],
+    weights: Sequence[float] | None,
+    batch_size: int,
+) -> tuple[float, float]:
+    """Mean PSNR and mean VGG feature distance (lower = perceptually closer) on validation."""
+    model.train(False)
+    psnrs, distances = [], []
+    for start in range(0, len(lr_crops), batch_size):
+        lr_batch = mx.array(lr_crops[start : start + batch_size])
+        hr_batch = mx.array(hr_crops[start : start + batch_size])
+        sr = mx.clip(model(lr_batch), 0.0, 1.0)
+        for i in range(sr.shape[0]):
+            psnrs.append(compute_psnr(sr[i], hr_batch[i]))
+        distance = perceptual_loss(sr, hr_batch, layers=list(layers), weights=weights)
+        distances.append(distance.item() * sr.shape[0])
+    model.train(True)
+    return float(np.mean(psnrs)), float(np.sum(distances) / len(lr_crops))
+
+
+def lsgan_discriminator_loss(real_logits: mx.array, fake_logits: mx.array) -> mx.array:
+    """LSGAN discriminator loss: (D(real) - 1)^2 + (D(fake) + 1)^2"""
+    return mx.mean((real_logits - 1.0) ** 2) + mx.mean((fake_logits + 1.0) ** 2)
+
+
+def lsgan_generator_loss(fake_logits: mx.array) -> mx.array:
+    """LSGAN generator loss: (D(fake) - 1)^2"""
+    return mx.mean((fake_logits - 1.0) ** 2)
+
+
 def make_loss_fn(
     perceptual_loss: PerceptualLoss,
+    discriminator: Discriminator | None,
     layers: Sequence[int],
     weights: Sequence[float] | None,
     l1_weight: float,
     ssim_weight: float,
     structural_weight: float,
     perceptual_weight: float,
+    adversarial_weight: float,
 ):
+    zero = mx.array(0.0, dtype=mx.float32)
+
     def loss_fn(model: SuperResolution, lr_batch: mx.array, hr_batch: mx.array):
-        sr = mx.clip(model(lr_batch), 0.0, 1.0)
+        # Clipping kills gradients for out-of-range pixels; only clip for the VGG/D inputs.
+        sr = model(lr_batch)
+        sr_clipped = mx.clip(sr, 0.0, 1.0)
         struct_loss, ssim_value, l1_value = structural_loss(sr, hr_batch, l1_weight, ssim_weight)
-        perc_loss = perceptual_loss(
-            sr,
-            hr_batch,
-            layers=list(layers),
-            weights=list(weights) if weights else None,
+        perc_loss = zero
+        if perceptual_weight > 0:
+            perc_loss = perceptual_loss(
+                sr_clipped,
+                hr_batch,
+                layers=list(layers),
+                weights=list(weights) if weights else None,
+            )
+        adv_loss = zero
+        if discriminator is not None and adversarial_weight > 0:
+            adv_loss = lsgan_generator_loss(discriminator(sr_clipped))
+        total = (
+            structural_weight * struct_loss
+            + perceptual_weight * perc_loss
+            + adversarial_weight * adv_loss
         )
-        return (
-            structural_weight * struct_loss + perceptual_weight * perc_loss,
-            (sr, struct_loss, perc_loss, ssim_value, l1_value),
-        )
+        return total, (sr_clipped, struct_loss, perc_loss, adv_loss, ssim_value, l1_value)
 
     return loss_fn
 
 
 def train(args: SimpleNamespace) -> None:
-    args.dataset = args.dataset.expanduser()
-    args.vgg_weights = args.vgg_weights.expanduser()
-    if args.checkpoint_dir is not None:
-        args.checkpoint_dir = args.checkpoint_dir.expanduser()
     mx.random.seed(args.seed)
+    # Unified memory is shared with the decoded-image cache; an unbounded MLX buffer cache grows
+    # past the GPU working set during the GAN stage and steps slow ~10x from paging.
+    mx.set_cache_limit(4 * 1024**3)
     dataset = SuperResolutionDataset(
         directory=args.dataset,
         hr_patch=args.hr_patch_size,
         upscale=args.upscale,
         augment=not args.no_augment,
         seed=args.seed,
+        cache_images=args.cache_images,
     )
 
     # Architecture depth/width are fixed to stable defaults for now.
     model = SuperResolution(upscale=args.upscale, num_encoder_layers=5, latent_dim=256)
+    if args.init_checkpoint is not None:
+        model.load_weights(str(args.init_checkpoint), strict=True)
+        print(f"initialized generator from {args.init_checkpoint}")
     mx.eval(model.parameters())
 
     feature_extractor = VGG16(num_classes=1000)
@@ -266,90 +345,129 @@ def train(args: SimpleNamespace) -> None:
 
     if args.perceptual_weights and len(args.perceptual_weights) != len(args.perceptual_layers):
         raise ValueError("number of perceptual weights must match number of perceptual layers")
+    perceptual_weights = list(args.perceptual_weights) if args.perceptual_weights else None
+
+    discriminator = None
+    if args.adversarial_weight > 0:
+        discriminator = Discriminator()
+        mx.eval(discriminator.parameters())
 
     loss_fn = make_loss_fn(
         perceptual_loss=perceptual_loss,
+        discriminator=discriminator,
         layers=list(args.perceptual_layers),
-        weights=list(args.perceptual_weights) if args.perceptual_weights else None,
+        weights=perceptual_weights,
         l1_weight=args.l1_weight,
         ssim_weight=args.ssim_weight,
         structural_weight=args.structural_weight,
         perceptual_weight=args.perceptual_weight,
+        adversarial_weight=args.adversarial_weight,
     )
     loss_and_grad_fn = nn.value_and_grad(model, loss_fn)
-    optimizer = optim.SGD(learning_rate=args.learning_rate)
 
     steps_per_epoch = args.steps_per_epoch
     if steps_per_epoch is not None and steps_per_epoch <= 0:
         steps_per_epoch = None
     if steps_per_epoch is None:
         steps_per_epoch = max(1, len(dataset) // args.batch_size)
+    total_steps = args.epochs * steps_per_epoch
 
-    best_psnr = -float("inf")
+    schedule = optim.cosine_decay(args.learning_rate, total_steps, args.learning_rate * 0.01)
+    optimizer = optim.Adam(learning_rate=schedule, betas=[0.9, 0.99])
+
+    if discriminator is not None:
+        d_schedule = optim.cosine_decay(
+            args.disc_learning_rate, total_steps, args.disc_learning_rate * 0.01
+        )
+        d_optimizer = optim.Adam(learning_rate=d_schedule, betas=[0.9, 0.99])
+        d_loss_and_grad_fn = nn.value_and_grad(
+            discriminator,
+            lambda d, real, fake: lsgan_discriminator_loss(d(real), d(fake)),
+        )
+
+    val_lr, val_hr = None, None
+    if args.val_dataset is not None:
+        val_lr, val_hr = load_validation_crops(args.val_dataset, args.val_crop, args.upscale)
+        print(f"validating on {len(val_lr)} center crops of {val_hr.shape[1]}px")
+
+    # Higher PSNR is better; lower VGG distance is better.
+    sign = 1.0 if args.select_by == "psnr" else -1.0
+    best_score = -float("inf")
     checkpoint_dir = args.checkpoint_dir
     if checkpoint_dir is not None:
         checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
     for epoch in range(1, args.epochs + 1):
-        running_loss = 0.0
-        running_struct = 0.0
-        running_perc = 0.0
-        running_ssim = 0.0
-        running_l1 = 0.0
-        running_psnr = 0.0
+        running = {"loss": 0.0, "struct": 0.0, "perc": 0.0, "adv": 0.0, "d": 0.0, "psnr": 0.0}
         num_steps = 0
 
         for step, (lr_batch, hr_batch) in enumerate(
             iterate_minibatches(dataset, args.batch_size, steps_per_epoch),
             start=1,
         ):
-            (loss_value, (sr, struct_loss, perc_loss, ssim_value, l1_value)), grads = (
+            (loss_value, (sr, struct_loss, perc_loss, adv_loss, ssim_value, l1_value)), grads = (
                 loss_and_grad_fn(model, lr_batch, hr_batch)
             )
             optimizer.update(model, grads)
             mx.eval(model.parameters(), optimizer.state)
 
-            loss_item = loss_value.item()
-            struct_item = struct_loss.item()
-            perc_item = perc_loss.item()
-            ssim_item = ssim_value.item()
-            l1_item = l1_value.item()
-            psnr_item = compute_psnr(sr, hr_batch)
+            d_item = 0.0
+            if discriminator is not None:
+                d_loss, d_grads = d_loss_and_grad_fn(discriminator, hr_batch, mx.stop_gradient(sr))
+                d_optimizer.update(discriminator, d_grads)
+                mx.eval(discriminator.parameters(), d_optimizer.state)
+                d_item = d_loss.item()
 
-            running_loss += loss_item
-            running_struct += struct_item
-            running_perc += perc_item
-            running_ssim += ssim_item
-            running_l1 += l1_item
-            running_psnr += psnr_item
+            values = {
+                "loss": loss_value.item(),
+                "struct": struct_loss.item(),
+                "perc": perc_loss.item(),
+                "adv": adv_loss.item(),
+                "d": d_item,
+                "psnr": compute_psnr(sr, hr_batch),
+            }
+            for key, value in values.items():
+                running[key] += value
             num_steps += 1
 
             if step % args.log_every == 0:
                 print(
                     f"epoch {epoch:03d} step {step:04d}/{steps_per_epoch:04d} "
-                    f"loss={loss_item:.4f} struct={struct_item:.4f} perc={perc_item:.4f} "
-                    f"ssim={ssim_item:.4f} psnr={psnr_item:.2f} l1={l1_item:.4f}"
+                    f"loss={values['loss']:.4f} struct={values['struct']:.4f} "
+                    f"perc={values['perc']:.4f} adv={values['adv']:.4f} d={values['d']:.4f} "
+                    f"ssim={ssim_value.item():.4f} psnr={values['psnr']:.2f} "
+                    f"l1={l1_value.item():.4f}"
                 )
 
-        inv_steps = 1.0 / max(1, num_steps)
-        mean_loss = running_loss * inv_steps
-        mean_struct = running_struct * inv_steps
-        mean_perc = running_perc * inv_steps
-        mean_ssim = running_ssim * inv_steps
-        mean_l1 = running_l1 * inv_steps
-        mean_psnr = running_psnr * inv_steps
-
-        print(
+        means = {key: value / max(1, num_steps) for key, value in running.items()}
+        summary = (
             f"[epoch {epoch:03d}/{args.epochs:03d}] "
-            f"loss={mean_loss:.4f} struct={mean_struct:.4f} perc={mean_perc:.4f} "
-            f"ssim={mean_ssim:.4f} psnr={mean_psnr:.2f} l1={mean_l1:.4f}"
+            f"loss={means['loss']:.4f} struct={means['struct']:.4f} perc={means['perc']:.4f} "
+            f"adv={means['adv']:.4f} d={means['d']:.4f} psnr={means['psnr']:.2f}"
         )
+
+        score = means["psnr"] if args.select_by == "psnr" else -means["perc"]
+        if val_lr is not None:
+            val_psnr, val_distance = evaluate(
+                model,
+                perceptual_loss,
+                val_lr,
+                val_hr,
+                args.perceptual_layers,
+                perceptual_weights,
+                args.batch_size,
+            )
+            summary += f" val_psnr={val_psnr:.2f} val_vgg={val_distance:.4f}"
+            score = sign * (val_psnr if args.select_by == "psnr" else val_distance)
+        print(summary)
 
         if checkpoint_dir is not None:
             ckpt_path = checkpoint_dir / f"superres_epoch_{epoch:04d}.npz"
             model.save_weights(str(ckpt_path))
-            if mean_psnr > best_psnr:
-                best_psnr = mean_psnr
+            if discriminator is not None:
+                discriminator.save_weights(str(checkpoint_dir / "discriminator.npz"))
+            if score > best_score:
+                best_score = score
                 model.save_weights(str(checkpoint_dir / "best.npz"))
 
 
@@ -380,6 +498,10 @@ def build_args_from_config(config_path: Path = CONFIG_PATH) -> SimpleNamespace:
     vgg_weights = resolve_path(config.get("vgg_weights"), base) or DEFAULT_VGG_WEIGHTS
     checkpoint_dir = resolve_path(config.get("checkpoint_dir"), base)
 
+    select_by = config.get("select_by", "psnr")
+    if select_by not in ("psnr", "perceptual"):
+        raise ValueError("`select_by` must be `psnr` or `perceptual`")
+
     def as_int_list(value, default):
         seq = value if value is not None else default
         return [int(v) for v in seq]
@@ -390,27 +512,37 @@ def build_args_from_config(config_path: Path = CONFIG_PATH) -> SimpleNamespace:
         return [float(v) for v in value]
 
     steps_value = config.get("steps_per_epoch")
+    learning_rate = float(config.get("learning_rate", 2e-4))
     return SimpleNamespace(
         dataset=dataset,
+        val_dataset=resolve_path(config.get("val_dataset"), base),
+        val_crop=int(config.get("val_crop", 256)),
         epochs=int(config.get("epochs", 50)),
-        batch_size=int(config.get("batch_size", 8)),
-        learning_rate=float(config.get("learning_rate", 1e-2)),
+        batch_size=int(config.get("batch_size", 16)),
+        learning_rate=learning_rate,
+        disc_learning_rate=float(config.get("disc_learning_rate", learning_rate)),
         upscale=int(config.get("upscale", 4)),
         hr_patch_size=int(config.get("hr_patch_size", 192)),
         steps_per_epoch=None if steps_value is None else int(steps_value),
         no_augment=bool(config.get("no_augment", False)),
+        cache_images=bool(config.get("cache_images", False)),
         seed=int(config.get("seed", 42)),
         log_every=int(config.get("log_every", 10)),
         perceptual_layers=as_int_list(config.get("perceptual_layers"), [0, 1, 2, 3]),
         perceptual_weights=as_float_list(config.get("perceptual_weights")),
-        l1_weight=float(config.get("l1_weight", 0.15)),
-        ssim_weight=float(config.get("ssim_weight", 0.85)),
+        l1_weight=float(config.get("l1_weight", 1.0)),
+        ssim_weight=float(config.get("ssim_weight", 0.0)),
         structural_weight=float(config.get("structural_weight", 1.0)),
-        perceptual_weight=float(config.get("perceptual_weight", 0.1)),
+        perceptual_weight=float(config.get("perceptual_weight", 0.0)),
+        adversarial_weight=float(config.get("adversarial_weight", 0.0)),
+        select_by=select_by,
+        init_checkpoint=resolve_path(config.get("init_checkpoint"), base),
         vgg_weights=vgg_weights,
         checkpoint_dir=checkpoint_dir,
     )
 
 
 if __name__ == "__main__":
-    train(build_args_from_config())
+    # Optional config path, e.g. `python main.py config_gan.yaml`; defaults to config.yaml.
+    config_path = Path(sys.argv[1]).resolve() if len(sys.argv) > 1 else CONFIG_PATH
+    train(build_args_from_config(config_path))

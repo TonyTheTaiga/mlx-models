@@ -1,0 +1,27 @@
+# Stage 2: GAN fine-tune for realistic texture, starting from the stage 1 best checkpoint.
+# Run with: python training/super_resolution/main.py training/super_resolution/config_gan.yaml
+dataset: ../../data/div2k/train
+val_dataset: ../../data/div2k/valid
+val_crop: 256
+init_checkpoint: checkpoints/div2k_psnr/best.npz
+epochs: 40
+batch_size: 16
+learning_rate: 0.0001
+disc_learning_rate: 0.0001
+upscale: 4
+hr_patch_size: 128
+steps_per_epoch: 500
+no_augment: false
+cache_images: true
+seed: 42
+log_every: 50
+perceptual_layers: [0, 1, 2, 3, 4]
+perceptual_weights: [0.1, 0.1, 1.0, 1.0, 1.0]
+l1_weight: 1.0
+ssim_weight: 0.0
+structural_weight: 0.01
+perceptual_weight: 0.1
+adversarial_weight: 0.005
+select_by: perceptual
+vgg_weights: ../../networks/vgg16/weights.npz
+checkpoint_dir: checkpoints/div2k_gan

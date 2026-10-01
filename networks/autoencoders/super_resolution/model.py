@@ -101,11 +101,15 @@ class SuperResolution(nn.Module):
 
         self.encoder = Encoder(3, latent_dim, num_encoder_layers)
         self.decoder = Decoder(latent_dim, 3, upscale)
+        # The network predicts a correction on top of bicubic, so it starts from bicubic quality;
+        # a zero final conv makes that correction exactly zero at init.
+        self.decoder.final.weight = mx.zeros_like(self.decoder.final.weight)
+        self.decoder.final.bias = mx.zeros_like(self.decoder.final.bias)
+        self.upsample = nn.Upsample(scale_factor=upscale, mode="cubic", align_corners=False)
 
     def __call__(self, x):
-        x = self.encoder(x)
-        x = self.decoder(x)
-        return x
+        residual = self.decoder(self.encoder(x))
+        return self.upsample(x) + residual
 
 
 if __name__ == "__main__":
