@@ -2,11 +2,11 @@
 //
 // Depth comes from the recorded optimization, not from the image: for each pixel, the fraction of
 // the dream during which it was still far from its final color. Pixels the model settled early sit
-// at the back; the last details to resolve come nearest. During playback each point flies in out
-// of the fog at the moment its pixel settles, colored by the developing frames.
+// at the back; the last details to resolve come nearest. A cloud develops by flying each point in
+// out of the fog at the moment its pixel settled, colored by the developing frames.
 import * as THREE from "three";
 
-const SIZE = 256;
+export const SIZE = 256;
 
 // Per-pixel settling time in [0, 1], on the same frame timeline as playback.
 export function emergence(frames) {
@@ -45,6 +45,15 @@ function blur(a) {
   return out;
 }
 
+export function texture(img) {
+  const t = new THREE.Texture(img);
+  t.colorSpace = THREE.SRGBColorSpace;
+  t.minFilter = THREE.LinearFilter;
+  t.generateMipmaps = false;
+  t.needsUpdate = true;
+  return t;
+}
+
 const vertex = /* glsl */ `
   attribute float settle;   // when this pixel was decided, 0..1
   attribute vec3 seed;      // where it waits in the fog
@@ -77,77 +86,61 @@ const fragment = /* glsl */ `
     gl_FragColor = vec4(vColor * exposure, vAlpha * soft);
   }`;
 
-export function createDepth(canvas) {
-  const renderer = new THREE.WebGLRenderer({ canvas, antialias: false, powerPreference: "high-performance" });
-  renderer.setPixelRatio(Math.min(devicePixelRatio || 1, 2));
-  renderer.setClearColor(0x050505, 1);
-  const scene = new THREE.Scene();
-  const camera = new THREE.PerspectiveCamera(32, 1, 0.1, 50);
+// Uniforms every cloud shares: the clock, the relief, and the point size for the viewport.
+export const shared = { time: { value: 0 }, pointScale: { value: 10 }, depth: { value: 1.1 } };
+// Points a little wider than the pixel pitch, so a settled cloud closes up at any distance.
+export function fitPoints(camera, heightPx) {
+  const perUnit = heightPx / (2 * Math.tan((camera.fov * Math.PI) / 360));
+  shared.pointScale.value = perUnit * (2 / SIZE) * 1.5;
+}
 
-  const N = SIZE * SIZE, pos = new Float32Array(N * 3), uv = new Float32Array(N * 2), seed = new Float32Array(N * 3);
+let common = null; // uv, fog seeds and a placeholder position: the same for every cloud
+function attributes() {
+  if (common) return common;
+  const N = SIZE * SIZE, uv = new Float32Array(N * 2), seed = new Float32Array(N * 3);
   for (let p = 0; p < N; p++) {
-    const x = p % SIZE, y = Math.floor(p / SIZE);
-    uv[p * 2] = (x + 0.5) / SIZE;
-    uv[p * 2 + 1] = 1 - (y + 0.5) / SIZE;
+    uv[p * 2] = ((p % SIZE) + 0.5) / SIZE;
+    uv[p * 2 + 1] = 1 - (Math.floor(p / SIZE) + 0.5) / SIZE;
     for (let k = 0; k < 3; k++) seed[p * 3 + k] = (Math.random() - 0.5) * 2;
   }
-  const geom = new THREE.BufferGeometry();
-  geom.setAttribute("position", new THREE.BufferAttribute(pos, 3)); // computed in the shader
-  geom.setAttribute("uv", new THREE.BufferAttribute(uv, 2));
-  geom.setAttribute("seed", new THREE.BufferAttribute(seed, 3));
-  const settleAttr = new THREE.BufferAttribute(new Float32Array(N), 1);
-  geom.setAttribute("settle", settleAttr);
-  geom.boundingSphere = new THREE.Sphere(new THREE.Vector3(), 4);
-
-  const uniforms = {
-    texA: { value: null }, texB: { value: null }, mixAB: { value: 0 }, dev: { value: 0 }, time: { value: 0 },
-    depth: { value: 1.1 }, pointScale: { value: 10 }, exposure: { value: 1 },
+  common = {
+    position: new THREE.BufferAttribute(new Float32Array(N * 3), 3), // computed in the shader
+    uv: new THREE.BufferAttribute(uv, 2),
+    seed: new THREE.BufferAttribute(seed, 3),
   };
-  const material = new THREE.ShaderMaterial({ vertexShader: vertex, fragmentShader: fragment, uniforms, transparent: true, depthWrite: false });
-  scene.add(new THREE.Points(geom, material));
+  return common;
+}
 
-  let textures = [];
-  function setDream(frames, settle) {
-    textures.forEach((t) => t.dispose());
-    textures = frames.map((img) => {
-      const t = new THREE.Texture(img);
-      t.colorSpace = THREE.SRGBColorSpace;
-      t.minFilter = THREE.LinearFilter;
-      t.generateMipmaps = false;
-      t.needsUpdate = true;
-      return t;
-    });
-    settleAttr.array.set(settle);
-    settleAttr.needsUpdate = true;
+// One dream as a point cloud: a 2×2 square in its local xy plane, facing +z.
+export class Cloud {
+  constructor(settle, final) {
+    const geom = new THREE.BufferGeometry(), a = attributes();
+    for (const k in a) geom.setAttribute(k, a[k]);
+    geom.setAttribute("settle", new THREE.BufferAttribute(settle, 1));
+    geom.boundingSphere = new THREE.Sphere(new THREE.Vector3(), 2.5);
+    this.final = texture(final);
+    this.uniforms = {
+      ...shared, texA: { value: this.final }, texB: { value: this.final },
+      mixAB: { value: 0 }, dev: { value: 0 }, exposure: { value: 1 },
+    };
+    this.points = new THREE.Points(geom, new THREE.ShaderMaterial({
+      vertexShader: vertex, fragmentShader: fragment, uniforms: this.uniforms, transparent: true, depthWrite: false,
+    }));
+    this.frames = null;
   }
-
-  function resize() {
-    const w = canvas.clientWidth, h = canvas.clientHeight;
-    if (canvas.width !== Math.round(w * renderer.getPixelRatio())) renderer.setSize(w, h, false);
-    camera.aspect = w / h;
-    camera.updateProjectionMatrix();
-    // Points a little wider than the pixel pitch, so the settled image closes up.
-    const perUnit = (h * renderer.getPixelRatio()) / (2 * Math.tan((camera.fov * Math.PI) / 360));
-    uniforms.pointScale.value = perUnit * (2 / SIZE) * 1.5;
+  // The recorded frames, for replaying development; null to keep only the final image.
+  setFrames(images) {
+    this.frames?.forEach((t) => t.dispose());
+    this.frames = images && images.map(texture);
   }
-
-  // t: seconds into this dream; dev: development 0..1; exposure: fade.
-  function render({ dev, frame, frac, t, exposure, still }) {
-    resize();
-    uniforms.texA.value = textures[frame];
-    uniforms.texB.value = textures[Math.min(frame + 1, textures.length - 1)];
-    uniforms.mixAB.value = frac;
-    uniforms.dev.value = dev;
-    uniforms.time.value = t;
-    uniforms.exposure.value = exposure;
-    // A slow orbit that widens as the dream resolves, so the depth reads; still for reduced motion.
-    const swing = still ? 0 : 0.12 + 0.3 * dev;
-    const yaw = swing * Math.sin(t * 0.11), pitch = (still ? 0 : 0.08) * Math.sin(t * 0.07 + 1);
-    const dist = 5 - (still ? 0 : 0.35 * dev);
-    camera.position.set(dist * Math.sin(yaw) * Math.cos(pitch), dist * Math.sin(pitch), dist * Math.cos(yaw) * Math.cos(pitch));
-    camera.lookAt(0, 0, 0);
-    renderer.render(scene, camera);
+  set(dev, exposure) {
+    const u = this.uniforms;
+    u.dev.value = dev;
+    u.exposure.value = exposure;
+    if (!this.frames) { u.texA.value = u.texB.value = this.final; return; }
+    const n = this.frames.length, x = Math.min(1, dev) * (n - 1), i = Math.min(n - 2, Math.floor(x));
+    u.texA.value = this.frames[i];
+    u.texB.value = this.frames[i + 1];
+    u.mixAB.value = x - i;
   }
-
-  return { setDream, render };
 }

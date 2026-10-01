@@ -4,39 +4,37 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>ten dreams</title>
-  <meta name="description" content="A small vision transformer imagines each of the ten things it knows.">
+  <meta name="description" content="A small vision transformer imagines each of the ten things it knows, forty times, in depth.">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,300;1,300;1,400&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="style.css">
-  <script type="importmap">{ "imports": { "three": "https://cdn.jsdelivr.net/npm/three@0.169.0/build/three.module.js" } }</script>
+  <script type="importmap">{ "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.169.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.169.0/examples/jsm/"
+  } }</script>
 </head>
 <body>
-  <main id="stage" aria-live="polite">
-    <canvas id="depth" aria-hidden="true"></canvas>
-    <div class="frame" id="frame">
-      <canvas id="dream" role="img" aria-label=""></canvas>
-      <canvas id="grain" aria-hidden="true"></canvas>
-    </div>
-    <p class="word" id="word"></p>
-  </main>
+  <canvas id="field" role="img" aria-label="forty dreams of a vision transformer, as point clouds: a column for each of its ten classes"></canvas>
+  <div id="labels" aria-hidden="true"></div>
 
-  <section class="title" id="title">
+  <header class="mark">
     <h1>ten dreams</h1>
-    <p>a small vision transformer, trained on ten kinds of thirty-two-pixel photograph,<br>imagines each of them</p>
-  </section>
+    <p id="count">gathering</p>
+  </header>
+  <p class="info" id="info" aria-live="polite"></p>
+  <p class="hint">drag to look · scroll to come closer · click a dream · i about</p>
 
   <aside class="about" id="about" hidden>
     <div>
-      <p>None of these images was photographed. Each began as grey noise and was adjusted, seven hundred and sixty-eight times, until any thirty-two-pixel glimpse of it left the model certain of a single word. What you see developing is that search.</p>
+      <p>None of these images was photographed. Each began as grey noise and was adjusted, seven hundred and sixty-eight times, until any thirty-two-pixel glimpse of it left the model certain of a single word. There are four for each word, from four different beginnings.</p>
       <p id="modelline">The model is a vision transformer trained on fifty thousand tiny photographs from CIFAR-10: airplanes, automobiles, birds, cats, deer, dogs, frogs, horses, ships and trucks. It knows nothing else. These are what those ten words mean to it.</p>
-      <p>In depth, every pixel is a point, set back or brought forward by when the model decided it: what settled first sits furthest away, and the last details to resolve come nearest. Each point flies in out of the fog at the moment its pixel settled.</p>
+      <p>Every pixel is a point, set back or brought forward by when the model decided it: what settled first sits furthest away, and the last details to resolve come nearest. Choose a dream and it develops again, each point flying in out of the fog at the moment its pixel settled.</p>
       <p>The images are parameterized in a decorrelated Fourier basis and optimized through random crops, flips and rescalings, after Olah, Mordvintsev &amp; Schubert, <i>Feature Visualization</i> (2017), and Mordvintsev's <i>DeepDream</i> (2015). Each image's contrast is stretched once; nothing else is retouched.</p>
-      <p class="keys">click or → for the next dream · space to pause · d for depth or flat · i to close</p>
+      <p class="keys">drag to look around · scroll to come closer · click a dream to go to it, the dark to step back · arrow keys to walk between dreams · i to close</p>
     </div>
   </aside>
 
-  <p class="hint" id="hint">click for the next dream · d depth · i about</p>
   <script type="module" src="app.js"></script>
 </body>
 </html>

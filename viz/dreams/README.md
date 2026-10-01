@@ -6,20 +6,20 @@ Each dream is a feature visualization (after Olah, Mordvintsev & Schubert, *Feat
 Distill 2017, and Mordvintsev's *DeepDream*, 2015): a 256 px image, parameterized in a decorrelated
 Fourier basis, optimized for 768 steps so that random glimpses of it — continuous-scale crops,
 flips, area-averaged down to the model's 32×32 — leave the CIFAR-10 ViT certain of one class. Every
-optimization is recorded as 24 frames, dense where the image first appears, and the page plays
-them back like a print developing in a darkroom: grey fog, a shape, then a deer.
+optimization is recorded as 24 frames, dense where the image first appears.
 
-By default the dreams play **in depth** (WebGL, three.js): every pixel is a point, set back or
-brought forward by *when the model decided it*. Depth is computed in the browser from the recorded
-frames: for each pixel, the fraction of the optimization during which it was still far from its
-final color, smoothed. What settled first (usually the ground and sky) sits furthest away; the
-last details to resolve come nearest. During playback each point flies in out of the fog at the
-moment its pixel settled, while the camera drifts slowly enough for the relief to read. **d**
-switches to the flat print and back.
+The page is **a field of forty**: every dream as a WebGL point cloud (three.js), a column per class
+— vehicles on the left, animals on the right — and a row per seed, so you can compare how the model
+imagines a cat with how it imagines a dog. Every pixel is a point, set back or brought forward by
+*when the model decided it*: computed in the browser from the recorded frames, the fraction of the
+optimization during which each pixel was still far from its final color, smoothed. What settled
+first (usually ground and sky) sits furthest away; the last details to resolve come nearest.
 
-Four seeds per class, forty dreams, shuffled so a word never repeats twice in a row. Each image's
-contrast is stretched once; nothing else is retouched. Click or → for the next dream, space to
-pause, d for depth or flat, i for the note on how they were made.
+Dreams arrive as they load, each condensing out of its own fog. Drag to look around, scroll to come
+closer; click a dream to fly up to it and watch it develop again, each point flying in at the moment
+its pixel settled, like a print coming up in a darkroom tray. Click the dark or press Esc to step
+back; arrow keys walk between dreams; i for the note on how they were made. Each image's contrast is
+stretched once; nothing else is retouched.
 
 ## Run
 
