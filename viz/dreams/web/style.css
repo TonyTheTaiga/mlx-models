@@ -1,0 +1,61 @@
+:root {
+  --black: #050505;
+  --bone: #e9e4d8;
+  --ash: rgba(233, 228, 216, 0.42);
+  --serif: "Cormorant Garamond", "Iowan Old Style", Georgia, serif;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; background: var(--black); color: var(--bone); overflow: hidden; }
+body { font: 300 18px/1.6 var(--serif); cursor: none; -webkit-font-smoothing: antialiased; }
+body.pointer { cursor: default; }
+
+#stage { position: fixed; inset: 0; display: grid; place-items: center; }
+.frame {
+  position: relative;
+  width: min(76vh, 86vw);
+  aspect-ratio: 1;
+  translate: 0 -2.5vh;
+}
+#dream, #grain { position: absolute; inset: 0; width: 100%; height: 100%; }
+#dream { transform-origin: 50% 50%; will-change: transform, filter, opacity; }
+#grain { mix-blend-mode: soft-light; opacity: 0.35; pointer-events: none; }
+/* Darkroom vignette over the whole stage. */
+#stage::after {
+  content: ""; position: fixed; inset: 0; pointer-events: none;
+  background: radial-gradient(ellipse at 50% 46%, transparent 38%, rgba(0, 0, 0, 0.55) 72%, #000 100%);
+}
+
+.word {
+  position: fixed; left: 0; right: 0; bottom: clamp(28px, 7vh, 72px); margin: 0;
+  text-align: center; font: italic 300 clamp(26px, 3.4vw, 44px)/1 var(--serif);
+  letter-spacing: 0.04em; color: var(--bone); opacity: 0; transition: opacity 2.4s ease;
+}
+.word.on { opacity: 0.92; }
+
+.title {
+  position: fixed; inset: 0; display: grid; place-content: center; text-align: center;
+  background: var(--black); z-index: 4; transition: opacity 2.2s ease;
+}
+.title h1 { font: italic 300 clamp(44px, 7vw, 96px)/1 var(--serif); letter-spacing: 0.02em; margin: 0 0 22px; }
+.title p { margin: 0; color: var(--ash); font-size: clamp(16px, 1.5vw, 20px); line-height: 1.5; }
+.title.gone { opacity: 0; pointer-events: none; }
+
+.about {
+  position: fixed; inset: 0; z-index: 5; display: grid; place-items: center; padding: 6vw;
+  background: rgba(5, 5, 5, 0.92); backdrop-filter: blur(6px); cursor: default;
+}
+.about[hidden] { display: none; }
+.about div { max-width: 40em; font-size: clamp(17px, 1.45vw, 21px); color: rgba(233, 228, 216, 0.86); }
+.about p { margin: 0 0 1.1em; }
+.about .keys { color: var(--ash); font-size: 0.85em; margin-top: 2em; }
+
+.hint {
+  position: fixed; right: 22px; bottom: 18px; margin: 0; font: italic 300 14px var(--serif);
+  color: var(--ash); opacity: 0; transition: opacity 1.5s ease; z-index: 3;
+}
+.hint.on { opacity: 1; }
+
+@media (prefers-reduced-motion: reduce) {
+  .word, .title, .hint { transition-duration: 0.6s; }
+}

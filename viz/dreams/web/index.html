@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ten dreams</title>
+  <meta name="description" content="A small vision transformer imagines each of the ten things it knows.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,300;1,300;1,400&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <main id="stage" aria-live="polite">
+    <div class="frame" id="frame">
+      <canvas id="dream" role="img" aria-label=""></canvas>
+      <canvas id="grain" aria-hidden="true"></canvas>
+    </div>
+    <p class="word" id="word"></p>
+  </main>
+
+  <section class="title" id="title">
+    <h1>ten dreams</h1>
+    <p>a small vision transformer, trained on ten kinds of thirty-two-pixel photograph,<br>imagines each of them</p>
+  </section>
+
+  <aside class="about" id="about" hidden>
+    <div>
+      <p>None of these images was photographed. Each began as grey noise and was adjusted, seven hundred and sixty-eight times, until any thirty-two-pixel glimpse of it left the model certain of a single word. What you see developing is that search.</p>
+      <p id="modelline">The model is a vision transformer trained on fifty thousand tiny photographs from CIFAR-10: airplanes, automobiles, birds, cats, deer, dogs, frogs, horses, ships and trucks. It knows nothing else. These are what those ten words mean to it.</p>
+      <p>The images are parameterized in a decorrelated Fourier basis and optimized through random crops, flips and rescalings, after Olah, Mordvintsev &amp; Schubert, <i>Feature Visualization</i> (2017), and Mordvintsev's <i>DeepDream</i> (2015). Each image's contrast is stretched once; nothing else is retouched.</p>
+      <p class="keys">click or → for the next dream · space to pause · i to close</p>
+    </div>
+  </aside>
+
+  <p class="hint" id="hint">click for the next dream · i about</p>
+  <script type="module" src="app.js"></script>
+</body>
+</html>
