@@ -5,6 +5,8 @@
 // consecutive frames are crossfaded. The page shuffles all dreams so a word never repeats twice
 // in a row, and preloads the next dream while the current one plays.
 
+import { createDepth, emergence } from "./depth.js";
+
 const $ = (id) => document.getElementById(id);
 const reduced = matchMedia("(prefers-reduced-motion: reduce)").matches;
 const T = { in: 1600, develop: 12000, hold: 7500, out: 2200 }; // ms
@@ -21,6 +23,11 @@ if (manifest.model) {
 }
 const canvas = $("dream"), ctx = canvas.getContext("2d");
 const word = $("word");
+// In depth (WebGL) by default; d flips to the flat print. Without WebGL, flat only.
+let depth = null;
+try { depth = createDepth($("depth")); } catch (e) { console.warn("no WebGL; flat only", e); }
+let deep = !!depth;
+document.body.classList.toggle("deep", deep);
 let queue = [], current = null, next = null, start = 0, paused = false, pausedAt = 0;
 
 function shuffled() {
@@ -43,7 +50,17 @@ function load(dream) {
     img.src = `assets/${dream.folder}/${String(i).padStart(2, "0")}.jpg`;
     return img;
   });
-  return { dream, frames, ready: Promise.all(frames.map((f) => f.decode().catch(() => {}))) };
+  const entry = { dream, frames, settle: null };
+  // Load events rather than decode(), which can stall while the page is hidden.
+  const loaded = (img) => new Promise((ok) => {
+    if (img.complete) return ok();
+    img.addEventListener("load", ok, { once: true });
+    img.addEventListener("error", ok, { once: true });
+  });
+  entry.ready = Promise.all(frames.map(loaded)).then(() => {
+    if (depth) entry.settle = emergence(frames);
+  });
+  return entry;
 }
 
 function pick() {
@@ -51,13 +68,18 @@ function pick() {
   return load(queue.shift());
 }
 
+let advancing = false;
 async function advance() {
+  if (advancing) return;
+  advancing = true;
   current = next || pick();
   next = pick(); // preload while this one plays
   await current.ready;
+  if (depth) depth.setDream(current.frames, current.settle);
   canvas.setAttribute("aria-label", `the model's dream of ${current.dream.class === "deer" ? "a deer" : `${/^[aeiou]/.test(current.dream.class) ? "an" : "a"} ${current.dream.class}`}`);
   word.classList.remove("on");
   start = performance.now();
+  advancing = false;
 }
 
 function size() {
@@ -73,27 +95,36 @@ function draw(now) {
   if (!current || paused) return;
   const t = now - start;
   if (t >= TOTAL) { advance(); return; }
-  const w = size(), frames = current.frames, n = frames.length;
+  const frames = current.frames, n = frames.length;
   // Development: an even walk through the recorded frames.
   const dev = Math.min(1, Math.max(0, (t - T.in) / T.develop));
   const x = dev * (n - 1), i = Math.floor(x), f = x - i;
+  // Exposure: fade up from black, down to black at the end.
+  const fadeIn = ease(Math.min(1, t / T.in)), fadeOut = 1 - ease(Math.max(0, (t - (TOTAL - T.out)) / T.out));
+  showWord(t, dev);
+  if (deep) {
+    depth.render({ dev, frame: i, frac: f, t: t / 1000, exposure: fadeIn * fadeOut, still: reduced });
+    return;
+  }
+  const w = size();
   ctx.globalAlpha = 1;
   ctx.imageSmoothingQuality = "high";
   ctx.drawImage(frames[i], 0, 0, w, w);
   if (i + 1 < n && f > 0) { ctx.globalAlpha = f; ctx.drawImage(frames[i + 1], 0, 0, w, w); }
-  // Exposure: fade up from black, down to black at the end.
-  const fadeIn = ease(Math.min(1, t / T.in)), fadeOut = 1 - ease(Math.max(0, (t - (TOTAL - T.out)) / T.out));
   canvas.style.opacity = (fadeIn * fadeOut).toFixed(3);
   // Focus pulls in as it develops; a slow drift while it holds.
   const blur = (1 - ease(dev)) * 6;
   const drift = reduced ? 1 : 1 + 0.045 * ease(Math.max(0, (t - T.in - T.develop * 0.6) / (T.develop * 0.4 + T.hold + T.out)));
   canvas.style.filter = `blur(${blur.toFixed(2)}px)`;
   canvas.style.transform = `scale(${drift.toFixed(4)})`;
+}
+
+function showWord(t, dev) {
   // The word arrives once the image has, and leaves before it does.
-  const showWord = dev > 0.62 && t < TOTAL - T.out - 600;
-  if (showWord !== word.classList.contains("on")) {
-    if (showWord) word.textContent = `${current.dream.class}.`;
-    word.classList.toggle("on", showWord);
+  const on = dev > 0.62 && t < TOTAL - T.out - 600;
+  if (on !== word.classList.contains("on")) {
+    if (on) word.textContent = `${current.dream.class}.`;
+    word.classList.toggle("on", on);
   }
 }
 
@@ -113,13 +144,18 @@ function regrain() {
 if (!reduced) setInterval(regrain, 83);
 regrain();
 
-// ----- controls: click / → next, space pause, i about -----
+// ----- controls: click / → next, space pause, d depth, i about -----
 const about = $("about"), hint = $("hint"), title = $("title");
 function skip() { if (!about.hidden) return; start = performance.now() - (TOTAL - T.out); }
 function togglePause() {
   paused = !paused;
   if (paused) pausedAt = performance.now();
   else start += performance.now() - pausedAt;
+}
+function toggleDepth() {
+  if (!depth) return;
+  deep = !deep;
+  document.body.classList.toggle("deep", deep);
 }
 function toggleAbout() {
   about.hidden = !about.hidden;
@@ -130,6 +166,7 @@ function toggleAbout() {
 addEventListener("keydown", (e) => {
   if (e.key === "ArrowRight") skip();
   else if (e.key === " ") { e.preventDefault(); togglePause(); }
+  else if (e.key === "d") toggleDepth();
   else if (e.key === "i" || (e.key === "Escape" && !about.hidden)) toggleAbout();
 });
 $("stage").addEventListener("click", skip);

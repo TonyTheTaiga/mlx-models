@@ -9,9 +9,11 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,300;1,300;1,400&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="style.css">
+  <script type="importmap">{ "imports": { "three": "https://cdn.jsdelivr.net/npm/three@0.169.0/build/three.module.js" } }</script>
 </head>
 <body>
   <main id="stage" aria-live="polite">
+    <canvas id="depth" aria-hidden="true"></canvas>
     <div class="frame" id="frame">
       <canvas id="dream" role="img" aria-label=""></canvas>
       <canvas id="grain" aria-hidden="true"></canvas>
@@ -28,12 +30,13 @@
     <div>
       <p>None of these images was photographed. Each began as grey noise and was adjusted, seven hundred and sixty-eight times, until any thirty-two-pixel glimpse of it left the model certain of a single word. What you see developing is that search.</p>
       <p id="modelline">The model is a vision transformer trained on fifty thousand tiny photographs from CIFAR-10: airplanes, automobiles, birds, cats, deer, dogs, frogs, horses, ships and trucks. It knows nothing else. These are what those ten words mean to it.</p>
+      <p>In depth, every pixel is a point, set back or brought forward by when the model decided it: what settled first sits furthest away, and the last details to resolve come nearest. Each point flies in out of the fog at the moment its pixel settled.</p>
       <p>The images are parameterized in a decorrelated Fourier basis and optimized through random crops, flips and rescalings, after Olah, Mordvintsev &amp; Schubert, <i>Feature Visualization</i> (2017), and Mordvintsev's <i>DeepDream</i> (2015). Each image's contrast is stretched once; nothing else is retouched.</p>
-      <p class="keys">click or → for the next dream · space to pause · i to close</p>
+      <p class="keys">click or → for the next dream · space to pause · d for depth or flat · i to close</p>
     </div>
   </aside>
 
-  <p class="hint" id="hint">click for the next dream · i about</p>
+  <p class="hint" id="hint">click for the next dream · d depth · i about</p>
   <script type="module" src="app.js"></script>
 </body>
 </html>

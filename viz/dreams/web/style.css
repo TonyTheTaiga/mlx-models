@@ -18,6 +18,11 @@ body.pointer { cursor: default; }
   translate: 0 -2.5vh;
 }
 #dream, #grain { position: absolute; inset: 0; width: 100%; height: 100%; }
+#depth { position: fixed; inset: 0; width: 100%; height: 100%; display: none; }
+.deep #depth { display: block; }
+.deep #dream { visibility: hidden; }
+.deep .frame { translate: none; position: static; }
+.deep #grain { position: fixed; }
 #dream { transform-origin: 50% 50%; will-change: transform, filter, opacity; }
 #grain { mix-blend-mode: soft-light; opacity: 0.35; pointer-events: none; }
 /* Darkroom vignette over the whole stage. */
