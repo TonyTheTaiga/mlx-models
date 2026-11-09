@@ -1,10 +1,3 @@
-"""
-RRDBNet generator from ESRGAN (Wang et al., 2018, https://arxiv.org/abs/1809.00219).
-
-Residual-in-residual dense blocks at low resolution, then nearest-neighbour + conv upsampling.
-Like SuperResolution, it predicts a correction on top of bicubic upsampling.
-"""
-
 import math
 
 import mlx.core as mx
@@ -12,8 +5,6 @@ import mlx.nn as nn
 
 
 class ResidualDenseBlock(nn.Module):
-    """Five 3x3 convs, each seeing the concatenation of the input and all previous outputs."""
-
     def __init__(self, num_features: int = 64, growth: int = 32, res_scale: float = 0.2):
         super().__init__()
 
@@ -67,7 +58,7 @@ class RRDBNet(nn.Module):
         ]
         self.conv_hr = nn.Conv2d(num_features, num_features, kernel_size=3, padding=1)
         self.conv_last = nn.Conv2d(num_features, 3, kernel_size=3, padding=1)
-        # Zero output conv: the correction starts at exactly zero, so training starts at bicubic.
+        # zero init: the residual starts at 0, so the output starts as plain bicubic
         self.conv_last.weight = mx.zeros_like(self.conv_last.weight)
         self.conv_last.bias = mx.zeros_like(self.conv_last.bias)
 

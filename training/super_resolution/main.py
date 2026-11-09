@@ -69,7 +69,7 @@ class SuperResolutionDataset:
         self.augment = augment
         self.paths = list_image_files(directory)
         self.rng = np.random.default_rng(seed)
-        # Decoding a 2K PNG per crop dominates step time; keep decoded images once seen.
+        # decoding a 2K PNG per crop dominated step time
         self.cache: dict[int, np.ndarray] | None = {} if cache_images else None
 
     def __len__(self) -> int:
@@ -232,7 +232,6 @@ def compute_psnr(prediction: mx.array, target: mx.array, max_val: float = 1.0) -
 def load_validation_crops(
     directory: Path, crop: int, upscale: int
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Fixed center crops of every validation image, degraded the same way as training."""
     lr_crops, hr_crops = [], []
     for path in list_image_files(directory):
         image = read_image(path)
@@ -255,7 +254,7 @@ def evaluate(
     weights: Sequence[float] | None,
     batch_size: int,
 ) -> tuple[float, float]:
-    """Mean PSNR and mean VGG feature distance (lower = perceptually closer) on validation."""
+    """Returns (mean PSNR, mean VGG feature distance)."""
     model.train(False)
     psnrs, distances = [], []
     for start in range(0, len(lr_crops), batch_size):
@@ -273,7 +272,7 @@ def evaluate(
 def build_generator(args: SimpleNamespace) -> nn.Module:
     if args.generator == "rrdb":
         return RRDBNet(upscale=args.upscale, num_blocks=args.rrdb_blocks)
-    # Original wide/shallow residual network; depth/width fixed to its stable defaults.
+    # Architecture depth/width are fixed to stable defaults for now.
     return SuperResolution(upscale=args.upscale, num_encoder_layers=5, latent_dim=256)
 
 
@@ -307,7 +306,7 @@ def make_loss_fn(
     zero = mx.array(0.0, dtype=mx.float32)
 
     def loss_fn(model: nn.Module, lr_batch: mx.array, hr_batch: mx.array):
-        # Clipping kills gradients for out-of-range pixels; only clip for the VGG/D inputs.
+        # clipping kills gradients for out-of-range pixels, so only clip the VGG/D inputs
         sr = model(lr_batch)
         sr_clipped = mx.clip(sr, 0.0, 1.0)
         struct_loss, ssim_value, l1_value = structural_loss(sr, hr_batch, l1_weight, ssim_weight)
@@ -334,8 +333,7 @@ def make_loss_fn(
 
 def train(args: SimpleNamespace) -> None:
     mx.random.seed(args.seed)
-    # Unified memory is shared with the decoded-image cache; an unbounded MLX buffer cache grows
-    # past the GPU working set during the GAN stage and steps slow ~10x from paging.
+    # an unbounded buffer cache grows past the GPU working set in the GAN stage and pages
     mx.set_cache_limit(4 * 1024**3)
     dataset = SuperResolutionDataset(
         directory=args.dataset,
@@ -403,7 +401,6 @@ def train(args: SimpleNamespace) -> None:
         val_lr, val_hr = load_validation_crops(args.val_dataset, args.val_crop, args.upscale)
         print(f"validating on {len(val_lr)} center crops of {val_hr.shape[1]}px")
 
-    # Higher PSNR is better; lower VGG distance is better.
     sign = 1.0 if args.select_by == "psnr" else -1.0
     best_score = -float("inf")
     checkpoint_dir = args.checkpoint_dir
@@ -568,6 +565,5 @@ def build_args_from_config(config_path: Path = CONFIG_PATH) -> SimpleNamespace:
 
 
 if __name__ == "__main__":
-    # Optional config path, e.g. `python main.py config_gan.yaml`; defaults to config.yaml.
     config_path = Path(sys.argv[1]).resolve() if len(sys.argv) > 1 else CONFIG_PATH
     train(build_args_from_config(config_path))

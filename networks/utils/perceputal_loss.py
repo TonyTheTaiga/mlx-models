@@ -1,7 +1,7 @@
 import mlx.core as mx
 import mlx.nn as nn
 
-# VGG was trained on ImageNet-normalized inputs; images here are RGB in [0, 1].
+# VGG expects ImageNet-normalized inputs
 IMAGENET_MEAN = mx.array([0.485, 0.456, 0.406])
 IMAGENET_STD = mx.array([0.229, 0.224, 0.225])
 

@@ -3,12 +3,6 @@ import mlx.nn as nn
 
 
 class Discriminator(nn.Module):
-    """
-    Fully convolutional patch discriminator in the style of SRGAN: pairs of 3x3 convs, the second
-    of each pair strided, widening as resolution drops. Outputs one realness score per patch, so it
-    works on any crop size.
-    """
-
     def __init__(self, base_dim: int = 64, num_stages: int = 4):
         super().__init__()
 
@@ -38,14 +32,6 @@ def _normalize(x: mx.array, eps: float = 1e-12) -> mx.array:
 
 
 class SpectralNormConv2d(nn.Module):
-    """
-    Conv2d whose weight is divided by its largest singular value (Miyato et al., 2018), which caps
-    how sharply the discriminator can react and keeps it from overpowering the generator.
-
-    The singular vectors u, v are frozen state, refreshed by `power_iteration()` once per training
-    step outside of gradient transforms; the forward pass treats them as constants.
-    """
-
     def __init__(
         self, in_dim: int, out_dim: int, kernel_size: int, stride: int = 1, padding: int = 0
     ):
@@ -56,8 +42,9 @@ class SpectralNormConv2d(nn.Module):
         self.padding = padding
         self.u = _normalize(mx.random.normal((out_dim,)))
         self.v = _normalize(mx.random.normal((in_dim * kernel_size * kernel_size,)))
+        # u, v are updated by power_iteration() outside of grad transforms, not by the optimizer
         self.freeze(keys=["u", "v"], recurse=False)
-        for _ in range(10):  # converge to the top singular vectors before the first step
+        for _ in range(10):
             self.power_iteration()
 
     def _matrix(self) -> mx.array:
@@ -76,22 +63,14 @@ class SpectralNormConv2d(nn.Module):
 
 
 class UNetDiscriminator(nn.Module):
-    """
-    U-Net discriminator with spectral norm, from Real-ESRGAN (Wang et al., 2021,
-    https://arxiv.org/abs/2107.10833). It outputs a realness score per pixel instead of per patch,
-    so the generator gets local feedback on exactly where its texture looks fake.
-    """
-
     def __init__(self, base_dim: int = 64):
         super().__init__()
 
         d = base_dim
         self.conv0 = nn.Conv2d(3, d, kernel_size=3, padding=1)
-        # Downsampling path.
         self.conv1 = SpectralNormConv2d(d, d * 2, 4, stride=2, padding=1)
         self.conv2 = SpectralNormConv2d(d * 2, d * 4, 4, stride=2, padding=1)
         self.conv3 = SpectralNormConv2d(d * 4, d * 8, 4, stride=2, padding=1)
-        # Upsampling path with skip connections.
         self.conv4 = SpectralNormConv2d(d * 8, d * 4, 3, padding=1)
         self.conv5 = SpectralNormConv2d(d * 4, d * 2, 3, padding=1)
         self.conv6 = SpectralNormConv2d(d * 2, d, 3, padding=1)
@@ -99,6 +78,7 @@ class UNetDiscriminator(nn.Module):
         self.conv8 = SpectralNormConv2d(d, d, 3, padding=1)
         self.conv9 = nn.Conv2d(d, 1, kernel_size=3, padding=1)
         self.up = nn.Upsample(scale_factor=2, mode="linear", align_corners=False)
+        self.act = nn.LeakyReLU(0.2)
 
     def power_iteration(self) -> None:
         for _, module in self.named_modules():
@@ -106,16 +86,15 @@ class UNetDiscriminator(nn.Module):
                 module.power_iteration()
 
     def __call__(self, x: mx.array) -> mx.array:
-        act = lambda t: nn.leaky_relu(t, 0.2)  # noqa: E731
-        x0 = act(self.conv0(x))
-        x1 = act(self.conv1(x0))
-        x2 = act(self.conv2(x1))
-        x3 = act(self.conv3(x2))
+        x0 = self.act(self.conv0(x))
+        x1 = self.act(self.conv1(x0))
+        x2 = self.act(self.conv2(x1))
+        x3 = self.act(self.conv3(x2))
 
-        x4 = act(self.conv4(self.up(x3))) + x2
-        x5 = act(self.conv5(self.up(x4))) + x1
-        x6 = act(self.conv6(self.up(x5))) + x0
+        x4 = self.act(self.conv4(self.up(x3))) + x2
+        x5 = self.act(self.conv5(self.up(x4))) + x1
+        x6 = self.act(self.conv6(self.up(x5))) + x0
 
-        out = act(self.conv7(x6))
-        out = act(self.conv8(out))
+        out = self.act(self.conv7(x6))
+        out = self.act(self.conv8(out))
         return self.conv9(out)

@@ -50,8 +50,7 @@ class Decoder(nn.Module):
         if 2**num_upsamples != scale_factor:
             raise ValueError("scale_factor must be a power of two")
 
-        # Nearest-neighbour upsample + conv rather than pixel shuffle: pixel shuffle leaves a
-        # checkerboard pattern that a GAN loss amplifies into a visible grid (as in ESRGAN).
+        # nearest + conv instead of pixel shuffle, which gave checkerboard artifacts under GAN loss
         layers = []
         for _ in range(num_upsamples):
             layers.extend(
@@ -81,8 +80,7 @@ class SuperResolution(nn.Module):
 
         self.encoder = Encoder(3, latent_dim, num_encoder_layers)
         self.decoder = Decoder(latent_dim, 3, upscale)
-        # The network predicts a correction on top of bicubic, so it starts from bicubic quality;
-        # a zero final conv makes that correction exactly zero at init.
+        # zero init: the residual starts at 0, so the output starts as plain bicubic
         self.decoder.final.weight = mx.zeros_like(self.decoder.final.weight)
         self.decoder.final.bias = mx.zeros_like(self.decoder.final.bias)
         self.upsample = nn.Upsample(scale_factor=upscale, mode="cubic", align_corners=False)

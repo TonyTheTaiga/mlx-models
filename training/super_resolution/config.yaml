@@ -1,4 +1,4 @@
-# Stage 1: pixel-loss pretrain. Gives the GAN stage (config_gan.yaml) a stable, accurate start.
+# stage 1: L1 pretrain, used as the init for config_gan.yaml
 dataset: ../../data/div2k/train
 val_dataset: ../../data/div2k/valid
 val_crop: 256

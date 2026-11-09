@@ -1,10 +1,6 @@
 #!/usr/bin/env python3
 """
-Upscale images with a trained super-resolution checkpoint.
-
-The image is processed in overlapping tiles so full-size photos fit in memory; each tile keeps
-only its interior, so the overlap hides seams. The architecture (RRDB or the original residual
-network) is detected from the checkpoint's parameter names.
+Upscale images with a trained super-resolution checkpoint, tile by tile.
 
 Usage:
     python training/super_resolution/upscale.py photo.jpg \
@@ -44,17 +40,15 @@ def load_generator(path: Path, upscale: int) -> nn.Module:
 def upscale_image(
     model: nn.Module, image: np.ndarray, upscale: int, tile: int, overlap: int
 ) -> np.ndarray:
-    """Upscale an RGB float32 [0, 1] image tile by tile; returns RGB float32 [0, 1]."""
     h, w, _ = image.shape
     out = np.zeros((h * upscale, w * upscale, 3), dtype=np.float32)
     for y in range(0, h, tile):
         for x in range(0, w, tile):
-            # Run the model on the tile plus `overlap` pixels of context on each side...
+            # run with `overlap` px of context around the tile, keep only the tile's output
             y0, x0 = max(y - overlap, 0), max(x - overlap, 0)
             y1, x1 = min(y + tile + overlap, h), min(x + tile + overlap, w)
             sr = mx.clip(model(mx.array(image[None, y0:y1, x0:x1])), 0.0, 1.0)
             sr = np.array(sr[0])
-            # ...and keep only the output for the tile itself.
             th, tw = min(tile, h - y) * upscale, min(tile, w - x) * upscale
             sy, sx = (y - y0) * upscale, (x - x0) * upscale
             out[y * upscale : y * upscale + th, x * upscale : x * upscale + tw] = sr[
@@ -65,7 +59,7 @@ def upscale_image(
 
 def collect_inputs(path: Path, upscale: int) -> list[Path]:
     if path.is_dir():
-        # Skip earlier outputs, which land in the same directory by default.
+        # skip earlier outputs, which land next to the inputs by default
         files = sorted(
             p
             for p in path.iterdir()
@@ -83,7 +77,7 @@ def output_path(source: Path, output: Path | None, upscale: int, many: bool) -> 
     name = f"{source.stem}_x{upscale}.png"
     if output is None:
         return source.with_name(name)
-    if many or output.is_dir():
+    if many or output.is_dir() or output.suffix.lower() not in IMAGE_EXTENSIONS:
         output.mkdir(parents=True, exist_ok=True)
         return output / name
     return output

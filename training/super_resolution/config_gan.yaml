@@ -1,9 +1,6 @@
-# Stage 2: GAN fine-tune for realistic texture, starting from the stage 1 best checkpoint.
-# Loss ratios follow Real-ESRGAN (pixel 1, perceptual ~1, adversarial 0.1); the spectral-norm
-# U-Net discriminator is what keeps an adversarial weight this large stable.
-# select_by: perceptual is only a hint here: VGG distance also rewards GAN artifacts, so pick
-# the final checkpoint by looking at crops.
-# Run with: python training/super_resolution/main.py training/super_resolution/config_gan.yaml
+# stage 2: GAN fine-tune, loss ratios from Real-ESRGAN
+# python training/super_resolution/main.py training/super_resolution/config_gan.yaml
+# VGG distance also rewards GAN artifacts, so pick the final epoch by looking at samples
 dataset: ../../data/div2k/train
 val_dataset: ../../data/div2k/valid
 val_crop: 256
