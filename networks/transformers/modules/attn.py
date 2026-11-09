@@ -10,14 +10,14 @@ class MultiHeadAttn(nn.Module):
 
         assert d_model % n_heads == 0, "d_model should evenly divide by n_heads"
 
-        self.d_model = d_model
-        self.n_heads = n_heads
-        self.d_k = d_model // n_heads
+        self.d_model: int = d_model
+        self.n_heads: int = n_heads
+        self.d_k: int = d_model // n_heads
 
-        self.W_q = nn.Linear(d_model, d_model, bias=False)
-        self.W_v = nn.Linear(d_model, d_model, bias=False)
-        self.W_k = nn.Linear(d_model, d_model, bias=False)
-        self.W_o = nn.Linear(d_model, d_model, bias=False)
+        self.W_q: nn.Linear = nn.Linear(d_model, d_model, bias=False)
+        self.W_v: nn.Linear = nn.Linear(d_model, d_model, bias=False)
+        self.W_k: nn.Linear = nn.Linear(d_model, d_model, bias=False)
+        self.W_o: nn.Linear = nn.Linear(d_model, d_model, bias=False)
 
     @staticmethod
     def generate_causal_mask(seq_len: int):
