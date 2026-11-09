@@ -1,6 +1,10 @@
 import mlx.core as mx
 import mlx.nn as nn
 
+# VGG expects ImageNet-normalized inputs
+IMAGENET_MEAN = mx.array([0.485, 0.456, 0.406])
+IMAGENET_STD = mx.array([0.229, 0.224, 0.225])
+
 
 class PerceptualLoss:
     def __init__(self, feature_extractor: nn.Module):
@@ -16,6 +20,8 @@ class PerceptualLoss:
         weights: list[float] | None = None,
     ):
         # stack x and y and unstack after features are extracted?
+        x = (x - IMAGENET_MEAN) / IMAGENET_STD
+        y = (y - IMAGENET_MEAN) / IMAGENET_STD
         sample_features = self.feature_extractor.extract_features(x)  # pyright: ignore
         target_features = self.feature_extractor.extract_features(y)  # pyright: ignore
 

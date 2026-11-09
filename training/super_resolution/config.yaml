@@ -1,18 +1,26 @@
-dataset: /path/to/hr_images
-epochs: 50
-batch_size: 8
-learning_rate: 0.01
+# stage 1: L1 pretrain, used as the init for config_gan.yaml
+dataset: ../../data/div2k/train
+val_dataset: ../../data/div2k/valid
+val_crop: 256
+epochs: 40
+batch_size: 16
+learning_rate: 0.0002
 upscale: 4
-hr_patch_size: 192
-steps_per_epoch: null
+generator: rrdb
+rrdb_blocks: 23
+hr_patch_size: 128
+steps_per_epoch: 500
 no_augment: false
+cache_images: true
 seed: 42
-log_every: 10
-perceptual_layers: [0, 1, 2, 3]
-perceptual_weights: null
-l1_weight: 0.15
-ssim_weight: 0.85
+log_every: 50
+perceptual_layers: [0, 1, 2, 3, 4]
+perceptual_weights: [0.1, 0.1, 1.0, 1.0, 1.0]
+l1_weight: 1.0
+ssim_weight: 0.0
 structural_weight: 1.0
-perceptual_weight: 0.1
-vgg_weights: ../networks/vgg16/weights.npz
-checkpoint_dir: null
+perceptual_weight: 0.0
+adversarial_weight: 0.0
+select_by: psnr
+vgg_weights: ../../networks/vgg16/weights.npz
+checkpoint_dir: checkpoints/div2k_psnr

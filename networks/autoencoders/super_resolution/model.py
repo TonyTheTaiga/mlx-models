@@ -48,16 +48,16 @@ class Decoder(nn.Module):
 
         num_upsamples = int(math.log2(scale_factor))
         if 2**num_upsamples != scale_factor:
-            raise ValueError(
-                "scale_factor must be a power of two to align with pixel shuffle upsampling"
-            )
+            raise ValueError("scale_factor must be a power of two")
 
+        # nearest + conv instead of pixel shuffle, which gave checkerboard artifacts under GAN loss
         layers = []
         for _ in range(num_upsamples):
             layers.extend(
                 [
-                    nn.Conv2d(input_dim, input_dim * 4, kernel_size=3, padding=1),
-                    PixelShuffle(2),
+                    nn.Upsample(scale_factor=2, mode="nearest"),
+                    nn.Conv2d(input_dim, input_dim, kernel_size=3, padding=1),
+                    nn.LeakyReLU(0.2),
                 ]
             )
 
@@ -67,27 +67,6 @@ class Decoder(nn.Module):
     def __call__(self, x):
         x = self.layers(x)
         return self.final(x)
-
-
-class PixelShuffle(nn.Module):
-    def __init__(self, upscale_factor: int):
-        super().__init__()
-        assert upscale_factor > 0
-
-        self.upscale_factor = upscale_factor
-
-    def __call__(self, x: mx.array):
-        return pixel_shuffle(x, self.upscale_factor)
-
-
-def pixel_shuffle(x: mx.array, upscale_factor: int):
-    b, h, w, c = x.shape
-    assert c % (upscale_factor**2) == 0, "feature dim must be divisible by upscale_factor ^ 2"
-    c_out = c // (upscale_factor**2)
-    x = x.reshape(b, h, w, c_out, upscale_factor, upscale_factor)
-    x = x.transpose(0, 1, 4, 2, 5, 3)
-    x = x.reshape(b, h * upscale_factor, w * upscale_factor, c_out)
-    return x
 
 
 class SuperResolution(nn.Module):
@@ -101,11 +80,14 @@ class SuperResolution(nn.Module):
 
         self.encoder = Encoder(3, latent_dim, num_encoder_layers)
         self.decoder = Decoder(latent_dim, 3, upscale)
+        # zero init: the residual starts at 0, so the output starts as plain bicubic
+        self.decoder.final.weight = mx.zeros_like(self.decoder.final.weight)
+        self.decoder.final.bias = mx.zeros_like(self.decoder.final.bias)
+        self.upsample = nn.Upsample(scale_factor=upscale, mode="cubic", align_corners=False)
 
     def __call__(self, x):
-        x = self.encoder(x)
-        x = self.decoder(x)
-        return x
+        residual = self.decoder(self.encoder(x))
+        return self.upsample(x) + residual
 
 
 if __name__ == "__main__":
