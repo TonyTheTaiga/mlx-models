@@ -23,6 +23,7 @@ class ImageFolder:
         batch_size: int,
         channels: int,
         shuffle: bool = True,
+        augment: bool = False,
     ) -> None:
         split_path = Path(root) / split
         if split not in {"train", "test"} or not split_path.is_dir():
@@ -35,6 +36,7 @@ class ImageFolder:
         self.batch_size = batch_size
         self.channels = channels
         self.shuffle = shuffle
+        self.augment = augment
         labels = sorted(int(d.name) for d in split_path.iterdir() if d.name.isdigit())
         if labels != list(range(len(labels))):
             raise ValueError(f"Label folders under {split_path} must be 0..N-1, got {labels}")
@@ -69,12 +71,25 @@ class ImageFolder:
                     image = image[:, :, None]
                 else:
                     image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+                if self.augment:
+                    image = random_crop_flip(image)
                 images.append(image)
 
             yield (
                 mx.array(np.stack(images).astype(np.float32) / 255.0),
                 mx.array([label for _, label in batch], dtype=mx.int32),
             )
+
+
+def random_crop_flip(image: np.ndarray, pad: int = 4) -> np.ndarray:
+    """Random crop from a reflect-padded image, then a horizontal flip half the time."""
+    h, w = image.shape[:2]
+    padded = np.pad(image, ((pad, pad), (pad, pad), (0, 0)), mode="reflect")
+    dy, dx = np.random.randint(0, 2 * pad + 1, size=2)
+    image = padded[dy : dy + h, dx : dx + w]
+    if np.random.rand() < 0.5:
+        image = image[:, ::-1]
+    return image
 
 
 class Classifier(nn.Module):
@@ -161,6 +176,7 @@ def main():
         split="train",
         batch_size=config["training"]["batch_size"],
         channels=dataset_config["channels"],
+        augment=config["training"].get("augment", False),
     )
     test = ImageFolder(
         root=root,
@@ -181,7 +197,12 @@ def main():
     epochs = config["training"]["epochs"]
     steps = len(train)
 
-    optimizer = optim.Adam(learning_rate=make_schedule(config["training"], epochs * steps))
+    schedule = make_schedule(config["training"], epochs * steps)
+    weight_decay = config["training"].get("weight_decay", 0.0)
+    if weight_decay:
+        optimizer = optim.AdamW(learning_rate=schedule, weight_decay=weight_decay)
+    else:
+        optimizer = optim.Adam(learning_rate=schedule)
 
     checkpoint_dir = None
     if config.get("checkpoint_dir"):
