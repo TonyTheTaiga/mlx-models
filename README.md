@@ -25,13 +25,14 @@ Location: `networks/autoencoders/super_resolution/`
 
 Models that enhance low-resolution images by upscaling them to higher resolution using deep learning.
 
-- Uses encoder-decoder architecture with residual blocks
-- Implements pixel shuffle technique for efficient upscaling
-- Supports perceptual loss using VGG features
-- Trained on the DIV2K dataset
+- RRDB generator (ESRGAN) by default; the original residual encoder-decoder is still available
+- Upsamples with nearest-neighbour + convolution and predicts a residual on top of bicubic
+- Two-stage training on DIV2K: an L1 pretrain for fidelity, then a GAN fine-tune for realistic
+  texture with a U-Net discriminator with spectral normalization (Real-ESRGAN)
+- Perceptual loss using ImageNet-normalized VGG16 features
 - Example results can be found in `result.png`
 
-**Paper**: [Real-Time Single Image and Video Super-Resolution Using an Efficient Sub-Pixel Convolutional Neural Network](https://arxiv.org/abs/1609.05158) (Shi et al., 2016)
+**Papers**: [ESRGAN](https://arxiv.org/abs/1809.00219) (Wang et al., 2018), [Real-ESRGAN](https://arxiv.org/abs/2107.10833) (Wang et al., 2021)
 
 ### Transformers - Autoregressive
 

@@ -6,6 +6,8 @@ epochs: 40
 batch_size: 16
 learning_rate: 0.0002
 upscale: 4
+generator: rrdb
+rrdb_blocks: 23
 hr_patch_size: 128
 steps_per_epoch: 500
 no_augment: false

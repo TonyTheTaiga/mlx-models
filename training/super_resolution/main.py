@@ -14,8 +14,9 @@ import mlx.optimizers as optim
 import numpy as np
 import yaml
 
-from networks.autoencoders.super_resolution.discriminator import Discriminator
+from networks.autoencoders.super_resolution.discriminator import Discriminator, UNetDiscriminator
 from networks.autoencoders.super_resolution.model import SuperResolution
+from networks.autoencoders.super_resolution.rrdb import RRDBNet
 from networks.utils.perceputal_loss import PerceptualLoss
 from networks.vgg16.model import VGG16
 
@@ -246,7 +247,7 @@ def load_validation_crops(
 
 
 def evaluate(
-    model: SuperResolution,
+    model: nn.Module,
     perceptual_loss: PerceptualLoss,
     lr_crops: np.ndarray,
     hr_crops: np.ndarray,
@@ -269,6 +270,19 @@ def evaluate(
     return float(np.mean(psnrs)), float(np.sum(distances) / len(lr_crops))
 
 
+def build_generator(args: SimpleNamespace) -> nn.Module:
+    if args.generator == "rrdb":
+        return RRDBNet(upscale=args.upscale, num_blocks=args.rrdb_blocks)
+    # Original wide/shallow residual network; depth/width fixed to its stable defaults.
+    return SuperResolution(upscale=args.upscale, num_encoder_layers=5, latent_dim=256)
+
+
+def build_discriminator(args: SimpleNamespace) -> nn.Module:
+    if args.discriminator == "unet":
+        return UNetDiscriminator()
+    return Discriminator()
+
+
 def lsgan_discriminator_loss(real_logits: mx.array, fake_logits: mx.array) -> mx.array:
     """LSGAN discriminator loss: (D(real) - 1)^2 + (D(fake) + 1)^2"""
     return mx.mean((real_logits - 1.0) ** 2) + mx.mean((fake_logits + 1.0) ** 2)
@@ -281,7 +295,7 @@ def lsgan_generator_loss(fake_logits: mx.array) -> mx.array:
 
 def make_loss_fn(
     perceptual_loss: PerceptualLoss,
-    discriminator: Discriminator | None,
+    discriminator: nn.Module | None,
     layers: Sequence[int],
     weights: Sequence[float] | None,
     l1_weight: float,
@@ -292,7 +306,7 @@ def make_loss_fn(
 ):
     zero = mx.array(0.0, dtype=mx.float32)
 
-    def loss_fn(model: SuperResolution, lr_batch: mx.array, hr_batch: mx.array):
+    def loss_fn(model: nn.Module, lr_batch: mx.array, hr_batch: mx.array):
         # Clipping kills gradients for out-of-range pixels; only clip for the VGG/D inputs.
         sr = model(lr_batch)
         sr_clipped = mx.clip(sr, 0.0, 1.0)
@@ -332,8 +346,7 @@ def train(args: SimpleNamespace) -> None:
         cache_images=args.cache_images,
     )
 
-    # Architecture depth/width are fixed to stable defaults for now.
-    model = SuperResolution(upscale=args.upscale, num_encoder_layers=5, latent_dim=256)
+    model = build_generator(args)
     if args.init_checkpoint is not None:
         model.load_weights(str(args.init_checkpoint), strict=True)
         print(f"initialized generator from {args.init_checkpoint}")
@@ -349,7 +362,7 @@ def train(args: SimpleNamespace) -> None:
 
     discriminator = None
     if args.adversarial_weight > 0:
-        discriminator = Discriminator()
+        discriminator = build_discriminator(args)
         mx.eval(discriminator.parameters())
 
     loss_fn = make_loss_fn(
@@ -415,6 +428,8 @@ def train(args: SimpleNamespace) -> None:
             if discriminator is not None:
                 d_loss, d_grads = d_loss_and_grad_fn(discriminator, hr_batch, mx.stop_gradient(sr))
                 d_optimizer.update(discriminator, d_grads)
+                if isinstance(discriminator, UNetDiscriminator):
+                    discriminator.power_iteration()
                 mx.eval(discriminator.parameters(), d_optimizer.state)
                 d_item = d_loss.item()
 
@@ -498,6 +513,13 @@ def build_args_from_config(config_path: Path = CONFIG_PATH) -> SimpleNamespace:
     vgg_weights = resolve_path(config.get("vgg_weights"), base) or DEFAULT_VGG_WEIGHTS
     checkpoint_dir = resolve_path(config.get("checkpoint_dir"), base)
 
+    generator = config.get("generator", "resnet")
+    if generator not in ("resnet", "rrdb"):
+        raise ValueError("`generator` must be `resnet` or `rrdb`")
+    discriminator = config.get("discriminator", "patch")
+    if discriminator not in ("patch", "unet"):
+        raise ValueError("`discriminator` must be `patch` or `unet`")
+
     select_by = config.get("select_by", "psnr")
     if select_by not in ("psnr", "perceptual"):
         raise ValueError("`select_by` must be `psnr` or `perceptual`")
@@ -522,6 +544,9 @@ def build_args_from_config(config_path: Path = CONFIG_PATH) -> SimpleNamespace:
         learning_rate=learning_rate,
         disc_learning_rate=float(config.get("disc_learning_rate", learning_rate)),
         upscale=int(config.get("upscale", 4)),
+        generator=generator,
+        rrdb_blocks=int(config.get("rrdb_blocks", 23)),
+        discriminator=discriminator,
         hr_patch_size=int(config.get("hr_patch_size", 192)),
         steps_per_epoch=None if steps_value is None else int(steps_value),
         no_augment=bool(config.get("no_augment", False)),
